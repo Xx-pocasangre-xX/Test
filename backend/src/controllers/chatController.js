@@ -1,22 +1,44 @@
-// Importar los modelos de chat y clientes
 import { ChatMessage, ChatConversation } from "../models/Chat.js";
 import clientsModel from "../models/Clients.js";
 
-// Objeto que contendrá todas las funciones del controller
 const chatController = {};
 
-// Función para generar ID único de conversación
+const debugLog = (message, data = null) => {
+    console.log(`🔥 CHAT: ${message}`, data || '');
+};
+
 const generateConversationId = (clientId) => {
     return `chat_${clientId}_${Date.now()}`;
 };
 
-// Obtener o crear una conversación para un cliente
+// Obtener o crear conversación
 chatController.getOrCreateConversation = async (req, res) => {
+    debugLog('getOrCreateConversation iniciado');
+    
     try {
         const { clientId } = req.params;
         
+        if (!req.user) {
+            debugLog('❌ No hay usuario autenticado');
+            return res.status(401).json({
+                success: false,
+                message: "Usuario no autenticado"
+            });
+        }
+
+        debugLog('Usuario autenticado:', req.user);
+        debugLog('ClientId recibido:', clientId);
+
+        // Verificar permisos
+        if (req.user.userType === 'Customer' && req.user.id !== clientId) {
+            return res.status(403).json({
+                success: false,
+                message: "No tienes permisos para acceder a esta conversación"
+            });
+        }
+        
         // Verificar que el cliente existe
-        const client = await clientsModel.findById(clientId);
+        const client = await clientsModel.findById(clientId).lean();
         if (!client) {
             return res.status(404).json({
                 success: false,
@@ -24,29 +46,45 @@ chatController.getOrCreateConversation = async (req, res) => {
             });
         }
 
-        // Buscar conversación activa existente
-        let conversation = await ChatConversation.findOne({ 
-            clientId: clientId,
-            status: 'active'
-        }).populate('clientId', 'fullName email');
+        debugLog('Cliente encontrado:', client.fullName);
 
-        // Si no existe, crear nueva conversación
+        // Buscar conversación existente (con clientId como string)
+        let conversation = await ChatConversation.findOne({ 
+            clientId: clientId, // String directo
+            status: 'active'
+        }).lean();
+
+        // Si no existe, crear nueva
         if (!conversation) {
             const conversationId = generateConversationId(clientId);
             conversation = new ChatConversation({
                 conversationId,
-                clientId: clientId
+                clientId: clientId // String directo
             });
             await conversation.save();
-            await conversation.populate('clientId', 'fullName email');
+            conversation = conversation.toObject();
+            debugLog('Conversación creada:', conversationId);
         }
 
+        // Respuesta simple
+        const response = {
+            ...conversation,
+            clientId: {
+                _id: client._id,
+                fullName: client.fullName,
+                email: client.email
+            }
+        };
+
+        debugLog('Respondiendo con conversación');
         res.status(200).json({
             success: true,
-            conversation
+            conversation: response
         });
+
     } catch (error) {
-        console.error('Error en getOrCreateConversation:', error);
+        debugLog('❌ Error:', error.message);
+        console.error('Stack:', error.stack);
         res.status(500).json({
             success: false,
             message: "Error interno del servidor",
@@ -55,98 +93,33 @@ chatController.getOrCreateConversation = async (req, res) => {
     }
 };
 
-// Enviar un mensaje
+// Enviar mensaje
 chatController.sendMessage = async (req, res) => {
+    debugLog('sendMessage iniciado');
+    
     try {
         const { conversationId, message } = req.body;
+        
+        if (!req.user) {
+            return res.status(401).json({
+                success: false,
+                message: "Usuario no autenticado"
+            });
+        }
+
         const { id: senderId, userType: senderType } = req.user;
 
-        // Validar datos requeridos
-        if (!conversationId || !message || !message.trim()) {
+        if (!conversationId || !message?.trim()) {
             return res.status(400).json({
                 success: false,
                 message: "Conversación y mensaje son requeridos"
             });
         }
 
-        // Verificar que la conversación existe
+        // Verificar conversación
         const conversation = await ChatConversation.findOne({ 
             conversationId: conversationId 
-        });
-        
-        if (!conversation) {
-            return res.status(404).json({
-                success: false,
-                message: "Conversación no encontrada"
-            });
-        }
-
-        // Verificar permisos: el cliente solo puede enviar a su propia conversación
-        if (senderType === 'Customer' && conversation.clientId.toString() !== senderId) {
-            return res.status(403).json({
-                success: false,
-                message: "No tienes permisos para enviar mensajes a esta conversación"
-            });
-        }
-
-        // Crear el mensaje
-        const chatMessage = new ChatMessage({
-            conversationId,
-            senderId,
-            senderType,
-            message: message.trim(),
-            status: 'sent'
-        });
-
-        await chatMessage.save();
-
-        // Actualizar la conversación
-        const updateData = {
-            lastMessage: message.trim(),
-            lastMessageAt: new Date(),
-            status: 'active'
-        };
-
-        // Incrementar contador de no leídos según quien envía
-        if (senderType === 'admin') {
-            updateData.unreadCountClient = conversation.unreadCountClient + 1;
-        } else {
-            updateData.unreadCountAdmin = conversation.unreadCountAdmin + 1;
-        }
-
-        await ChatConversation.findOneAndUpdate(
-            { conversationId },
-            updateData
-        );
-
-        // Poblar información del remitente
-        await chatMessage.populate('senderId', 'fullName email');
-
-        res.status(201).json({
-            success: true,
-            message: chatMessage
-        });
-    } catch (error) {
-        console.error('Error en sendMessage:', error);
-        res.status(500).json({
-            success: false,
-            message: "Error interno del servidor",
-            error: error.message
-        });
-    }
-};
-
-// Obtener mensajes de una conversación
-chatController.getMessages = async (req, res) => {
-    try {
-        const { conversationId } = req.params;
-        const { page = 1, limit = 50 } = req.query;
-        const { id: userId, userType } = req.user;
-
-        // Verificar que la conversación existe
-        const conversation = await ChatConversation.findOne({ 
-            conversationId: conversationId 
-        });
+        }).lean();
         
         if (!conversation) {
             return res.status(404).json({
@@ -156,29 +129,131 @@ chatController.getMessages = async (req, res) => {
         }
 
         // Verificar permisos
-        if (userType === 'Customer' && conversation.clientId.toString() !== userId) {
+        if (senderType === 'Customer' && conversation.clientId !== senderId) {
+            return res.status(403).json({
+                success: false,
+                message: "No tienes permisos para enviar mensajes a esta conversación"
+            });
+        }
+
+        // Crear mensaje con senderId como string
+        const messageSenderId = senderType === 'admin' ? 'admin' : senderId;
+
+        const chatMessage = new ChatMessage({
+            conversationId,
+            senderId: messageSenderId, // String directo
+            senderType,
+            message: message.trim(),
+            status: 'sent'
+        });
+
+        await chatMessage.save();
+
+        // Actualizar conversación
+        const updateData = {
+            lastMessage: message.trim(),
+            lastMessageAt: new Date(),
+            status: 'active'
+        };
+
+        if (senderType === 'admin') {
+            updateData.unreadCountClient = (conversation.unreadCountClient || 0) + 1;
+        } else {
+            updateData.unreadCountAdmin = (conversation.unreadCountAdmin || 0) + 1;
+        }
+
+        await ChatConversation.findOneAndUpdate(
+            { conversationId },
+            updateData
+        );
+
+        // Respuesta simple
+        const responseMessage = {
+            ...chatMessage.toObject(),
+            senderId: {
+                _id: messageSenderId,
+                fullName: senderType === 'admin' ? 'Administrador' : 'Cliente',
+                email: req.user.email || ''
+            }
+        };
+
+        res.status(201).json({
+            success: true,
+            message: responseMessage
+        });
+
+    } catch (error) {
+        debugLog('❌ Error en sendMessage:', error.message);
+        res.status(500).json({
+            success: false,
+            message: "Error interno del servidor",
+            error: error.message
+        });
+    }
+};
+
+// Obtener mensajes
+chatController.getMessages = async (req, res) => {
+    debugLog('getMessages iniciado');
+    
+    try {
+        const { conversationId } = req.params;
+        const { page = 1, limit = 50 } = req.query;
+        
+        if (!req.user) {
+            return res.status(401).json({
+                success: false,
+                message: "Usuario no autenticado"
+            });
+        }
+
+        const { id: userId, userType } = req.user;
+
+        // Verificar conversación
+        const conversation = await ChatConversation.findOne({ 
+            conversationId: conversationId 
+        }).lean();
+        
+        if (!conversation) {
+            return res.status(404).json({
+                success: false,
+                message: "Conversación no encontrada"
+            });
+        }
+
+        // Verificar permisos
+        if (userType === 'Customer' && conversation.clientId !== userId) {
             return res.status(403).json({
                 success: false,
                 message: "No tienes permisos para acceder a esta conversación"
             });
         }
 
-        // Calcular skip para paginación
+        // Obtener mensajes
         const skip = (parseInt(page) - 1) * parseInt(limit);
-
-        // Obtener mensajes con paginación
         const messages = await ChatMessage.find({ conversationId })
-            .populate('senderId', 'fullName email')
             .sort({ createdAt: -1 })
             .limit(parseInt(limit))
-            .skip(skip);
+            .skip(skip)
+            .lean();
 
-        // Contar total de mensajes
+        debugLog(`Mensajes encontrados: ${messages.length}`);
+
+        // Población manual simple
+        const populatedMessages = messages.map(message => ({
+            ...message,
+            senderId: {
+                _id: message.senderId,
+                fullName: message.senderType === 'admin' ? 'Administrador' : 'Cliente',
+                email: ''
+            }
+        }));
+
         const totalMessages = await ChatMessage.countDocuments({ conversationId });
 
         res.status(200).json({
             success: true,
-            messages: messages.reverse(), // Invertir para mostrar cronológicamente
+            messages: populatedMessages.reverse(),
             pagination: {
                 currentPage: parseInt(page),
                 totalPages: Math.ceil(totalMessages / parseInt(limit)),
@@ -187,8 +262,9 @@ chatController.getMessages = async (req, res) => {
                 hasPrevPage: parseInt(page) > 1
             }
         });
+
     } catch (error) {
-        console.error('Error en getMessages:', error);
+        debugLog('❌ Error en getMessages:', error.message);
         res.status(500).json({
             success: false,
             message: "Error interno del servidor",
@@ -197,37 +273,25 @@ chatController.getMessages = async (req, res) => {
     }
 };
 
-// Marcar mensajes como leídos
+// Marcar como leído
 chatController.markAsRead = async (req, res) => {
     try {
         const { conversationId } = req.params;
-        const { id: userId, userType } = req.user;
-
-        // Verificar que la conversación existe
-        const conversation = await ChatConversation.findOne({ 
-            conversationId: conversationId 
-        });
         
-        if (!conversation) {
-            return res.status(404).json({
+        if (!req.user) {
+            return res.status(401).json({
                 success: false,
-                message: "Conversación no encontrada"
+                message: "Usuario no autenticado"
             });
         }
 
-        // Verificar permisos
-        if (userType === 'Customer' && conversation.clientId.toString() !== userId) {
-            return res.status(403).json({
-                success: false,
-                message: "No tienes permisos para acceder a esta conversación"
-            });
-        }
+        const { id: userId, userType } = req.user;
+        const queryUserId = userType === 'admin' ? 'admin' : userId;
 
-        // Marcar mensajes como leídos (mensajes que NO envió el usuario actual)
-        const updateResult = await ChatMessage.updateMany(
+        await ChatMessage.updateMany(
             { 
                 conversationId,
-                senderId: { $ne: userId },
+                senderId: { $ne: queryUserId },
                 isRead: false
             },
             { 
@@ -236,7 +300,6 @@ chatController.markAsRead = async (req, res) => {
             }
         );
 
-        // Resetear contador de no leídos en la conversación
         const conversationUpdate = {};
         if (userType === 'admin') {
             conversationUpdate.unreadCountAdmin = 0;
@@ -251,11 +314,10 @@ chatController.markAsRead = async (req, res) => {
 
         res.status(200).json({
             success: true,
-            message: "Mensajes marcados como leídos",
-            messagesUpdated: updateResult.modifiedCount
+            message: "Mensajes marcados como leídos"
         });
+
     } catch (error) {
-        console.error('Error en markAsRead:', error);
         res.status(500).json({
             success: false,
             message: "Error interno del servidor",
@@ -264,33 +326,68 @@ chatController.markAsRead = async (req, res) => {
     }
 };
 
-// Obtener todas las conversaciones (para admin)
+// Obtener todas las conversaciones (admin)
 chatController.getAllConversations = async (req, res) => {
+    debugLog('getAllConversations iniciado');
+    
     try {
+        if (!req.user || req.user.userType !== 'admin') {
+            return res.status(403).json({
+                success: false,
+                message: "Acceso denegado"
+            });
+        }
+
         const { page = 1, limit = 20, status = 'all' } = req.query;
         
-        // Construir filtro
         const filter = {};
         if (status !== 'all') {
             filter.status = status;
         }
 
-        // Calcular skip para paginación
         const skip = (parseInt(page) - 1) * parseInt(limit);
 
-        // Obtener conversaciones con información del cliente
         const conversations = await ChatConversation.find(filter)
-            .populate('clientId', 'fullName email profilePicture')
             .sort({ lastMessageAt: -1 })
             .limit(parseInt(limit))
-            .skip(skip);
+            .skip(skip)
+            .lean();
 
-        // Contar total de conversaciones
+        debugLog(`Conversaciones encontradas: ${conversations.length}`);
+
+        // Población manual de clientes
+        const populatedConversations = await Promise.all(
+            conversations.map(async (conv) => {
+                try {
+                    const client = await clientsModel.findById(conv.clientId, 'fullName email profilePicture').lean();
+                    return {
+                        ...conv,
+                        clientId: client || { 
+                            _id: conv.clientId, 
+                            fullName: 'Cliente desconocido', 
+                            email: '',
+                            profilePicture: null
+                        }
+                    };
+                } catch (error) {
+                    return {
+                        ...conv,
+                        clientId: { 
+                            _id: conv.clientId, 
+                            fullName: 'Cliente con error', 
+                            email: '',
+                            profilePicture: null
+                        }
+                    };
+                }
+            })
+        );
+
         const totalConversations = await ChatConversation.countDocuments(filter);
 
         res.status(200).json({
             success: true,
-            conversations,
+            conversations: populatedConversations,
             pagination: {
                 currentPage: parseInt(page),
                 totalPages: Math.ceil(totalConversations / parseInt(limit)),
@@ -299,8 +396,9 @@ chatController.getAllConversations = async (req, res) => {
                 hasPrevPage: parseInt(page) > 1
             }
         });
+
     } catch (error) {
-        console.error('Error en getAllConversations:', error);
+        debugLog('❌ Error en getAllConversations:', error.message);
         res.status(500).json({
             success: false,
             message: "Error interno del servidor",
@@ -312,13 +410,20 @@ chatController.getAllConversations = async (req, res) => {
 // Cerrar conversación
 chatController.closeConversation = async (req, res) => {
     try {
+        if (!req.user || req.user.userType !== 'admin') {
+            return res.status(403).json({
+                success: false,
+                message: "Acceso denegado"
+            });
+        }
+
         const { conversationId } = req.params;
 
         const conversation = await ChatConversation.findOneAndUpdate(
             { conversationId },
             { status: 'closed' },
             { new: true }
-        ).populate('clientId', 'fullName email');
+        ).lean();
 
         if (!conversation) {
             return res.status(404).json({
@@ -332,8 +437,8 @@ chatController.closeConversation = async (req, res) => {
             message: "Conversación cerrada exitosamente",
             conversation
         });
+
     } catch (error) {
-        console.error('Error en closeConversation:', error);
         res.status(500).json({
             success: false,
             message: "Error interno del servidor",
@@ -342,9 +447,16 @@ chatController.closeConversation = async (req, res) => {
     }
 };
 
-// Obtener estadísticas de chat para admin
+// Obtener estadísticas
 chatController.getChatStats = async (req, res) => {
     try {
+        if (!req.user || req.user.userType !== 'admin') {
+            return res.status(403).json({
+                success: false,
+                message: "Acceso denegado"
+            });
+        }
+
         const [
             totalConversations,
             activeConversations,
@@ -371,8 +483,8 @@ chatController.getChatStats = async (req, res) => {
                 unreadMessages: unreadCount
             }
         });
+
     } catch (error) {
-        console.error('Error en getChatStats:', error);
         res.status(500).json({
             success: false,
             message: "Error interno del servidor",
@@ -381,5 +493,4 @@ chatController.getChatStats = async (req, res) => {
     }
 };
 
-// Exportar el controller
 export default chatController;

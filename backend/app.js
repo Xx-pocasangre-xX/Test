@@ -20,42 +20,49 @@ import clientsRoutes from './src/routes/clients.js';
 import reviewsRoutes from './src/routes/reviews.js';
 import categoriesRoutes from './src/routes/categories.js';
 
-// NUEVA LÍNEA - Importar rutas de recuperación de contraseña
+// Importar rutas de recuperación de contraseña
 import passwordResetRoutes from './src/routes/passwordReset.js';
 
-// NUEVA LÍNEA - Importar rutas de verificación de email
+// Importar rutas de verificación de email
 import emailVerificationRoutes from './src/routes/emailVerification.js';
 
-// NUEVA LÍNEA - Importar rutas de chat
+// Importar rutas de chat
 import chatRoutes from './src/routes/chat.js';
 
 // Crea la instancia de la aplicación Express
 const app = express();
 
-// Middleware para parsear JSON con límite de 50MB
-app.use(express.json({ limit: '50mb' }));
+// ===== ORDEN CRÍTICO DE MIDDLEWARE =====
 
-// Middleware para parsear datos URL-encoded con límite de 50MB
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
-
-// Middleware para parsear texto plano con límite de 50MB
-app.use(express.text({ limit: '50mb' }));
-
-// Middleware para parsear datos raw con límite de 50MB
-app.use(express.raw({ limit: '50mb' }));
-
-// Middleware para parsear cookies
-app.use(cookieParser());
-
-// CORS - Configura CORS para permitir peticiones desde localhost:5173
+// 1. CORS DEBE IR PRIMERO (MUY IMPORTANTE PARA COOKIES)
 app.use(
    cors({
        origin: "http://localhost:5173",
-       credentials: true,
+       credentials: true,  // ¡CRUCIAL PARA COOKIES!
    })
 );
 
-// RUTAS - Configuración de todas las rutas de la API
+// 2. MIDDLEWARE DE PARSING (DESPUÉS DE CORS)
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(express.text({ limit: '50mb' }));
+app.use(express.raw({ limit: '50mb' }));
+
+// 3. COOKIE PARSER (ANTES DE LAS RUTAS)
+app.use(cookieParser());
+
+// ===== MIDDLEWARE DE DEBUG PARA COOKIES =====
+app.use((req, res, next) => {
+    if (req.path.includes('/api/chat')) {
+        console.log('🔍 DEBUG MIDDLEWARE - Ruta de chat detectada');
+        console.log('📍 Path:', req.path);
+        console.log('🍪 Cookies en middleware:', req.cookies);
+        console.log('🔑 AuthToken presente:', !!req.cookies.authToken);
+    }
+    next();
+});
+
+// ===== CONFIGURACIÓN DE RUTAS =====
 app.use('/api/products', productsRoutes);
 app.use('/api/media', mediaRoutes);
 app.use("/api/registerCustomers", registerClientsRoutes);
@@ -68,14 +75,49 @@ app.use("/api/clients", clientsRoutes);
 app.use("/api/reviews", reviewsRoutes);
 app.use("/api/categories", categoriesRoutes);
 
-// NUEVA LÍNEA - Usar rutas de recuperación de contraseña
+// Rutas de recuperación de contraseña
 app.use('/api/passwordReset', passwordResetRoutes);
 
-// NUEVA LÍNEA - Usar rutas de verificación de email (después de las otras rutas)
+// Rutas de verificación de email
 app.use('/api/emailVerification', emailVerificationRoutes);
 
-// NUEVA LÍNEA - Usar rutas de chat
-app.use('/api/chat', chatRoutes);
+// ===== RUTAS DE CHAT (CON DEBUG ADICIONAL) =====
+app.use('/api/chat', (req, res, next) => {
+    console.log('🚀 Ruta de chat accedida:', req.method, req.path);
+    console.log('🍪 Cookies disponibles:', Object.keys(req.cookies));
+    next();
+}, chatRoutes);
+
+// ===== MIDDLEWARE DE MANEJO DE ERRORES =====
+app.use((err, req, res, next) => {
+    console.error('💥 Error en aplicación:', err);
+    
+    // Si es error de JWT
+    if (err.name === 'JsonWebTokenError' || err.name === 'TokenExpiredError') {
+        return res.status(401).json({
+            success: false,
+            message: 'Token inválido o expirado',
+            error: err.message
+        });
+    }
+    
+    // Error genérico
+    res.status(500).json({
+        success: false,
+        message: 'Error interno del servidor',
+        error: process.env.NODE_ENV === 'development' ? err.message : 'Error interno'
+    });
+});
+
+// ===== MIDDLEWARE PARA 404 =====
+app.use('*', (req, res) => {
+    console.log('❌ Ruta no encontrada:', req.method, req.originalUrl);
+    res.status(404).json({
+        success: false,
+        message: 'Ruta no encontrada',
+        path: req.originalUrl
+    });
+});
 
 // Exporta la aplicación para ser utilizada en otros módulos
 export default app;
