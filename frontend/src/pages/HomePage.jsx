@@ -1,10 +1,14 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { useAuth } from "../context/AuthContext";
 
 // Importación de componentes 
 import Header from "../components/Header/Header";
 import Footer from "../components/Footer";
 import CategoryNavigation from "../components/CategoryNavigation";
+
+// NUEVA LÍNEA - Importar componente de chat para clientes
+import ChatClient from "../components/Chat/ChatClient";
 
 // Imágenes utilizadas
 import heroImage from "../assets/postfebruaryhome.png";
@@ -22,6 +26,7 @@ import iconFavorites from '../assets/favoritesIcon.png';
 
 const HomePage = () => {
   const navigate = useNavigate();
+  const { user, isAuthenticated } = useAuth();
 
   // Estados para funcionalidades
   const [favorites, setFavorites] = useState(new Set());
@@ -29,7 +34,9 @@ const HomePage = () => {
   const [showCartMessage, setShowCartMessage] = useState(false);
   const [showFavoriteMessage, setShowFavoriteMessage] = useState(false);
   const [showChatModal, setShowChatModal] = useState(false);
-  const [chatMessage, setChatMessage] = useState("");
+
+  // NUEVA LÍNEA - Estado para el chat del cliente
+  const [showClientChat, setShowClientChat] = useState(false);
 
   const featuredProducts = [
     {
@@ -134,6 +141,17 @@ const HomePage = () => {
     }
   };
 
+  // NUEVA FUNCIÓN - Manejar apertura de chat
+  const handleChatClick = () => {
+    // Si es cliente autenticado, abrir chat real
+    if (isAuthenticated && user?.userType === 'Customer') {
+      setShowClientChat(true);
+    } else {
+      // Si no está autenticado o no es cliente, mostrar chat demo
+      setShowChatModal(true);
+    }
+  };
+
   // Componente de notificación
   const Notification = ({ show, message, type = 'success' }) => {
     if (!show) return null;
@@ -160,7 +178,7 @@ const HomePage = () => {
   return (
     <div className="bg-pink-50">
 
-      {/* Botón de Chat Flotante */}
+      {/* Chat Demo Modal - Solo para usuarios no autenticados */}
       {showChatModal && (
         <div className="fixed bottom-6 right-6 z-40">
           <div className="bg-white rounded-lg shadow-xl max-w-sm w-full max-h-[80vh] overflow-hidden">
@@ -176,6 +194,9 @@ const HomePage = () => {
                   <h3 className="font-medium text-gray-900" style={{ fontFamily: "Poppins" }}>
                     Atención al cliente
                   </h3>
+                  <p className="text-sm text-gray-500" style={{ fontFamily: "Poppins" }}>
+                    Demo - Inicia sesión para chat real
+                  </p>
                 </div>
               </div>
               <button
@@ -188,9 +209,9 @@ const HomePage = () => {
               </button>
             </div>
 
-            {/* Área de mensajes */}
+            {/* Área de mensajes demo */}
             <div className="p-4 h-80 overflow-y-auto bg-gray-50">
-              {/* Mensaje del bot */}
+              {/* Mensajes de demostración */}
               <div className="mb-4">
                 <div className="bg-gray-200 rounded-lg p-3 max-w-xs">
                   <p className="text-sm text-gray-800" style={{ fontFamily: "Poppins" }}>
@@ -199,7 +220,6 @@ const HomePage = () => {
                 </div>
               </div>
 
-              {/* Mensaje del usuario */}
               <div className="mb-4 flex justify-end">
                 <div className="bg-pink-100 rounded-lg p-3 max-w-xs">
                   <p className="text-sm text-gray-800" style={{ fontFamily: "Poppins" }}>
@@ -208,74 +228,41 @@ const HomePage = () => {
                 </div>
               </div>
 
-              {/* Respuesta del bot */}
               <div className="mb-4">
                 <div className="bg-gray-200 rounded-lg p-3 max-w-xs">
                   <p className="text-sm text-gray-800" style={{ fontFamily: "Poppins" }}>
-                    ¡Claro! Tenemos varias opciones de arreglos florales para cumpleaños. ¿Prefieres flores naturales o secas? También tenemos giftboxes que incluyen flores y otros detalles.
-                  </p>
-                </div>
-              </div>
-
-              {/* Mensaje del usuario */}
-              <div className="mb-4 flex justify-end">
-                <div className="bg-pink-100 rounded-lg p-3 max-w-xs">
-                  <p className="text-sm text-gray-800" style={{ fontFamily: "Poppins" }}>
-                    Me gustaría ver opciones de flores naturales, preferiblemente algo con rosas
-                  </p>
-                </div>
-              </div>
-
-              {/* Respuesta del bot */}
-              <div className="mb-4">
-                <div className="bg-gray-200 rounded-lg p-3 max-w-xs">
-                  <p className="text-sm text-gray-800" style={{ fontFamily: "Poppins" }}>
-                    ¡Perfecto! Te recomiendo nuestro 'Ramo de rosas frescas'
+                    ¡Claro! Tenemos varias opciones de arreglos florales para cumpleaños. Para usar el chat en tiempo real, por favor inicia sesión.
                   </p>
                 </div>
               </div>
             </div>
 
-            {/* Input para escribir mensaje */}
-            <div className="p-4 bg-white">
-              <div className="flex items-center space-x-2">
-                <input
-                  type="text"
-                  value={chatMessage}
-                  onChange={(e) => setChatMessage(e.target.value)}
-                  placeholder="Escribe un mensaje..."
-                  className="flex-1 p-2 border border-gray-300 rounded-lg focus:outline-none text-sm"
-                  style={{ fontFamily: "Poppins" }}
-                  onKeyPress={(e) => {
-                    if (e.key === 'Enter') {
-                      console.log("Mensaje enviado:", chatMessage);
-                      setChatMessage("");
-                    }
-                  }}
-                />
-                <button
-                  onClick={() => {
-                    console.log("Mensaje enviado:", chatMessage);
-                    setChatMessage("");
-                  }}
-                  className="bg-pink-200 hover:bg-pink-300 text-white p-2 rounded-full transition-colors duration-200"
-                >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
-                  </svg>
-                </button>
-              </div>
+            {/* Botón para iniciar sesión */}
+            <div className="p-4 bg-white border-t">
+              <button
+                onClick={() => navigate('/login')}
+                className="w-full bg-[#E8ACD2] hover:bg-[#E096C8] text-white py-2 px-4 rounded-lg transition-colors"
+                style={{ fontFamily: "Poppins" }}
+              >
+                Iniciar sesión para chat
+              </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Botón de Chat Flotante - Solo aparece cuando el modal está cerrado */}
-      {!showChatModal && (
+      {/* Chat Real para Clientes - NUEVA LÍNEA */}
+      <ChatClient 
+        isOpen={showClientChat} 
+        onClose={() => setShowClientChat(false)} 
+      />
+
+      {/* Botón de Chat Flotante - ACTUALIZADO */}
+      {!showChatModal && !showClientChat && (
         <div className="fixed bottom-6 right-6 z-40">
           <button
             style={{ cursor: 'pointer' }}
-            onClick={() => setShowChatModal(true)}
+            onClick={handleChatClick}
             className="bg-[#E8ACD2] hover:bg-[#E096C8] text-white p-4 rounded-full shadow-lg hover:shadow-xl transition-all duration-300 transform hover:scale-110 group"
             title="Abrir chat"
           >
@@ -287,6 +274,7 @@ const HomePage = () => {
           </button>
         </div>
       )}
+
       {/* Notificaciones */}
       <Notification
         show={showCartMessage}
@@ -372,7 +360,6 @@ const HomePage = () => {
           </div>
         </div>
       </section>
-      {/* Categorías visuales */}
 
       {/* Productos destacados */}
       <section id="productos-destacados" className="bg-pink-50 py-8 sm:py-14">

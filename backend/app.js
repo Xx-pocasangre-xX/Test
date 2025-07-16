@@ -26,6 +26,9 @@ import passwordResetRoutes from './src/routes/passwordReset.js';
 // NUEVA LÍNEA - Importar rutas de verificación de email
 import emailVerificationRoutes from './src/routes/emailVerification.js';
 
+// NUEVA LÍNEA - Importar rutas de chat
+import chatRoutes from './src/routes/chat.js';
+
 // Crea la instancia de la aplicación Express
 const app = express();
 
@@ -70,6 +73,9 @@ app.use('/api/passwordReset', passwordResetRoutes);
 
 // NUEVA LÍNEA - Usar rutas de verificación de email (después de las otras rutas)
 app.use('/api/emailVerification', emailVerificationRoutes);
+
+// NUEVA LÍNEA - Usar rutas de chat
+app.use('/api/chat', chatRoutes);
 
 // Exporta la aplicación para ser utilizada en otros módulos
 export default app;
