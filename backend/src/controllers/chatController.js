@@ -1,35 +1,29 @@
-import { ChatMessage, ChatConversation } from "../models/Chat.js";
+import ChatMessage from "../models/ChatMessage.js";
+import ChatConversation from "../models/ChatConversation.js";
 import clientsModel from "../models/Clients.js";
+import { emitNewMessage, emitConversationClosed, emitMessagesRead, emitChatStats } from "../utils/socketConfig.js";
 
 const chatController = {};
 
-const debugLog = (message, data = null) => {
-    console.log(`🔥 CHAT: ${message}`, data || '');
-};
-
+// Función para generar ID único de conversación
 const generateConversationId = (clientId) => {
     return `chat_${clientId}_${Date.now()}`;
 };
 
 // Obtener o crear conversación
 chatController.getOrCreateConversation = async (req, res) => {
-    debugLog('getOrCreateConversation iniciado');
-    
     try {
         const { clientId } = req.params;
         
+        // Validar usuario autenticado
         if (!req.user) {
-            debugLog('❌ No hay usuario autenticado');
             return res.status(401).json({
                 success: false,
                 message: "Usuario no autenticado"
             });
         }
 
-        debugLog('Usuario autenticado:', req.user);
-        debugLog('ClientId recibido:', clientId);
-
-        // Verificar permisos
+        // Verificar permisos - los clientes solo pueden acceder a su propia conversación
         if (req.user.userType === 'Customer' && req.user.id !== clientId) {
             return res.status(403).json({
                 success: false,
@@ -46,29 +40,22 @@ chatController.getOrCreateConversation = async (req, res) => {
             });
         }
 
-        debugLog('Cliente encontrado:', client.fullName);
+        // Buscar conversación existente activa usando el método estático
+        let conversation = await ChatConversation.findActiveByClient(clientId);
 
-        // Buscar conversación existente (con clientId como string)
-        let conversation = await ChatConversation.findOne({ 
-            clientId: clientId, // String directo
-            status: 'active'
-        }).lean();
-
-        // Si no existe, crear nueva
+        // Si no existe, crear nueva conversación
         if (!conversation) {
             const conversationId = generateConversationId(clientId);
             conversation = new ChatConversation({
                 conversationId,
-                clientId: clientId // String directo
+                clientId: clientId
             });
             await conversation.save();
-            conversation = conversation.toObject();
-            debugLog('Conversación creada:', conversationId);
         }
 
-        // Respuesta simple
+        // Preparar respuesta con información del cliente
         const response = {
-            ...conversation,
+            ...conversation.toObject(),
             clientId: {
                 _id: client._id,
                 fullName: client.fullName,
@@ -76,15 +63,13 @@ chatController.getOrCreateConversation = async (req, res) => {
             }
         };
 
-        debugLog('Respondiendo con conversación');
         res.status(200).json({
             success: true,
             conversation: response
         });
 
     } catch (error) {
-        debugLog('❌ Error:', error.message);
-        console.error('Stack:', error.stack);
+        console.error('Error en getOrCreateConversation:', error);
         res.status(500).json({
             success: false,
             message: "Error interno del servidor",
@@ -95,11 +80,10 @@ chatController.getOrCreateConversation = async (req, res) => {
 
 // Enviar mensaje
 chatController.sendMessage = async (req, res) => {
-    debugLog('sendMessage iniciado');
-    
     try {
         const { conversationId, message } = req.body;
         
+        // Validar usuario autenticado
         if (!req.user) {
             return res.status(401).json({
                 success: false,
@@ -109,6 +93,7 @@ chatController.sendMessage = async (req, res) => {
 
         const { id: senderId, userType: senderType } = req.user;
 
+        // Validar datos requeridos
         if (!conversationId || !message?.trim()) {
             return res.status(400).json({
                 success: false,
@@ -116,10 +101,10 @@ chatController.sendMessage = async (req, res) => {
             });
         }
 
-        // Verificar conversación
+        // Verificar que la conversación existe
         const conversation = await ChatConversation.findOne({ 
             conversationId: conversationId 
-        }).lean();
+        });
         
         if (!conversation) {
             return res.status(404).json({
@@ -128,7 +113,7 @@ chatController.sendMessage = async (req, res) => {
             });
         }
 
-        // Verificar permisos
+        // Verificar permisos - los clientes solo pueden enviar mensajes a su conversación
         if (senderType === 'Customer' && conversation.clientId !== senderId) {
             return res.status(403).json({
                 success: false,
@@ -136,12 +121,12 @@ chatController.sendMessage = async (req, res) => {
             });
         }
 
-        // Crear mensaje con senderId como string
+        // Crear mensaje con el ID del remitente
         const messageSenderId = senderType === 'admin' ? 'admin' : senderId;
 
         const chatMessage = new ChatMessage({
             conversationId,
-            senderId: messageSenderId, // String directo
+            senderId: messageSenderId,
             senderType,
             message: message.trim(),
             status: 'sent'
@@ -149,13 +134,14 @@ chatController.sendMessage = async (req, res) => {
 
         await chatMessage.save();
 
-        // Actualizar conversación
+        // Actualizar la conversación con el último mensaje
         const updateData = {
             lastMessage: message.trim(),
             lastMessageAt: new Date(),
             status: 'active'
         };
 
+        // Incrementar contador de mensajes no leídos según el tipo de usuario
         if (senderType === 'admin') {
             updateData.unreadCountClient = (conversation.unreadCountClient || 0) + 1;
         } else {
@@ -167,7 +153,7 @@ chatController.sendMessage = async (req, res) => {
             updateData
         );
 
-        // Respuesta simple
+        // Preparar respuesta del mensaje
         const responseMessage = {
             ...chatMessage.toObject(),
             senderId: {
@@ -177,13 +163,24 @@ chatController.sendMessage = async (req, res) => {
             }
         };
 
+        // ===== EMISIÓN EN TIEMPO REAL =====
+        // Obtener instancia de Socket.IO
+        const io = req.app.get('io');
+        if (io) {
+            // Emitir nuevo mensaje a todos los usuarios en la conversación
+            emitNewMessage(io, conversationId, responseMessage);
+            
+            // Emitir estadísticas actualizadas a administradores
+            emitChatStats(io);
+        }
+
         res.status(201).json({
             success: true,
             message: responseMessage
         });
 
     } catch (error) {
-        debugLog('❌ Error en sendMessage:', error.message);
+        console.error('Error en sendMessage:', error);
         res.status(500).json({
             success: false,
             message: "Error interno del servidor",
@@ -192,14 +189,13 @@ chatController.sendMessage = async (req, res) => {
     }
 };
 
-// Obtener mensajes
+// Obtener mensajes de una conversación
 chatController.getMessages = async (req, res) => {
-    debugLog('getMessages iniciado');
-    
     try {
         const { conversationId } = req.params;
         const { page = 1, limit = 50 } = req.query;
         
+        // Validar usuario autenticado
         if (!req.user) {
             return res.status(401).json({
                 success: false,
@@ -209,7 +205,7 @@ chatController.getMessages = async (req, res) => {
 
         const { id: userId, userType } = req.user;
 
-        // Verificar conversación
+        // Verificar que la conversación existe
         const conversation = await ChatConversation.findOne({ 
             conversationId: conversationId 
         }).lean();
@@ -221,7 +217,7 @@ chatController.getMessages = async (req, res) => {
             });
         }
 
-        // Verificar permisos
+        // Verificar permisos - los clientes solo pueden ver mensajes de su conversación
         if (userType === 'Customer' && conversation.clientId !== userId) {
             return res.status(403).json({
                 success: false,
@@ -229,7 +225,7 @@ chatController.getMessages = async (req, res) => {
             });
         }
 
-        // Obtener mensajes
+        // Obtener mensajes con paginación
         const skip = (parseInt(page) - 1) * parseInt(limit);
         const messages = await ChatMessage.find({ conversationId })
             .sort({ createdAt: -1 })
@@ -237,9 +233,7 @@ chatController.getMessages = async (req, res) => {
             .skip(skip)
             .lean();
 
-        debugLog(`Mensajes encontrados: ${messages.length}`);
-
-        // Población manual simple
+        // Población manual de la información del remitente
         const populatedMessages = messages.map(message => ({
             ...message,
             senderId: {
@@ -249,11 +243,12 @@ chatController.getMessages = async (req, res) => {
             }
         }));
 
+        // Contar total de mensajes para paginación
         const totalMessages = await ChatMessage.countDocuments({ conversationId });
 
         res.status(200).json({
             success: true,
-            messages: populatedMessages.reverse(),
+            messages: populatedMessages.reverse(), // Revertir para mostrar cronológicamente
             pagination: {
                 currentPage: parseInt(page),
                 totalPages: Math.ceil(totalMessages / parseInt(limit)),
@@ -264,7 +259,7 @@ chatController.getMessages = async (req, res) => {
         });
 
     } catch (error) {
-        debugLog('❌ Error en getMessages:', error.message);
+        console.error('Error en getMessages:', error);
         res.status(500).json({
             success: false,
             message: "Error interno del servidor",
@@ -273,11 +268,12 @@ chatController.getMessages = async (req, res) => {
     }
 };
 
-// Marcar como leído
+// Marcar mensajes como leídos
 chatController.markAsRead = async (req, res) => {
     try {
         const { conversationId } = req.params;
         
+        // Validar usuario autenticado
         if (!req.user) {
             return res.status(401).json({
                 success: false,
@@ -288,6 +284,7 @@ chatController.markAsRead = async (req, res) => {
         const { id: userId, userType } = req.user;
         const queryUserId = userType === 'admin' ? 'admin' : userId;
 
+        // Marcar mensajes como leídos (excepto los propios)
         await ChatMessage.updateMany(
             { 
                 conversationId,
@@ -300,6 +297,7 @@ chatController.markAsRead = async (req, res) => {
             }
         );
 
+        // Resetear contador de mensajes no leídos en la conversación
         const conversationUpdate = {};
         if (userType === 'admin') {
             conversationUpdate.unreadCountAdmin = 0;
@@ -312,12 +310,24 @@ chatController.markAsRead = async (req, res) => {
             conversationUpdate
         );
 
+        // ===== EMISIÓN EN TIEMPO REAL =====
+        // Obtener instancia de Socket.IO
+        const io = req.app.get('io');
+        if (io) {
+            // Emitir evento de mensajes leídos
+            emitMessagesRead(io, conversationId, {
+                userId: userId,
+                userType: userType
+            });
+        }
+
         res.status(200).json({
             success: true,
             message: "Mensajes marcados como leídos"
         });
 
     } catch (error) {
+        console.error('Error en markAsRead:', error);
         res.status(500).json({
             success: false,
             message: "Error interno del servidor",
@@ -326,11 +336,10 @@ chatController.markAsRead = async (req, res) => {
     }
 };
 
-// Obtener todas las conversaciones (admin)
+// Obtener todas las conversaciones (solo administradores)
 chatController.getAllConversations = async (req, res) => {
-    debugLog('getAllConversations iniciado');
-    
     try {
+        // Validar que sea administrador
         if (!req.user || req.user.userType !== 'admin') {
             return res.status(403).json({
                 success: false,
@@ -340,6 +349,7 @@ chatController.getAllConversations = async (req, res) => {
 
         const { page = 1, limit = 20, status = 'all' } = req.query;
         
+        // Construir filtro de búsqueda
         const filter = {};
         if (status !== 'all') {
             filter.status = status;
@@ -347,15 +357,14 @@ chatController.getAllConversations = async (req, res) => {
 
         const skip = (parseInt(page) - 1) * parseInt(limit);
 
+        // Obtener conversaciones ordenadas por último mensaje
         const conversations = await ChatConversation.find(filter)
             .sort({ lastMessageAt: -1 })
             .limit(parseInt(limit))
             .skip(skip)
             .lean();
 
-        debugLog(`Conversaciones encontradas: ${conversations.length}`);
-
-        // Población manual de clientes
+        // Población manual de información del cliente para cada conversación
         const populatedConversations = await Promise.all(
             conversations.map(async (conv) => {
                 try {
@@ -383,6 +392,7 @@ chatController.getAllConversations = async (req, res) => {
             })
         );
 
+        // Contar total de conversaciones para paginación
         const totalConversations = await ChatConversation.countDocuments(filter);
 
         res.status(200).json({
@@ -398,7 +408,7 @@ chatController.getAllConversations = async (req, res) => {
         });
 
     } catch (error) {
-        debugLog('❌ Error en getAllConversations:', error.message);
+        console.error('Error en getAllConversations:', error);
         res.status(500).json({
             success: false,
             message: "Error interno del servidor",
@@ -407,9 +417,10 @@ chatController.getAllConversations = async (req, res) => {
     }
 };
 
-// Cerrar conversación
+// Cerrar conversación (solo administradores)
 chatController.closeConversation = async (req, res) => {
     try {
+        // Validar que sea administrador
         if (!req.user || req.user.userType !== 'admin') {
             return res.status(403).json({
                 success: false,
@@ -419,11 +430,8 @@ chatController.closeConversation = async (req, res) => {
 
         const { conversationId } = req.params;
 
-        const conversation = await ChatConversation.findOneAndUpdate(
-            { conversationId },
-            { status: 'closed' },
-            { new: true }
-        ).lean();
+        // Buscar y actualizar la conversación usando el método de instancia
+        const conversation = await ChatConversation.findOne({ conversationId });
 
         if (!conversation) {
             return res.status(404).json({
@@ -432,13 +440,28 @@ chatController.closeConversation = async (req, res) => {
             });
         }
 
+        // Usar el método de instancia para cerrar la conversación
+        await conversation.close();
+
+        // ===== EMISIÓN EN TIEMPO REAL =====
+        // Obtener instancia de Socket.IO
+        const io = req.app.get('io');
+        if (io) {
+            // Emitir evento de conversación cerrada
+            emitConversationClosed(io, conversationId);
+            
+            // Emitir estadísticas actualizadas
+            emitChatStats(io);
+        }
+
         res.status(200).json({
             success: true,
             message: "Conversación cerrada exitosamente",
-            conversation
+            conversation: conversation.toObject()
         });
 
     } catch (error) {
+        console.error('Error en closeConversation:', error);
         res.status(500).json({
             success: false,
             message: "Error interno del servidor",
@@ -447,9 +470,10 @@ chatController.closeConversation = async (req, res) => {
     }
 };
 
-// Obtener estadísticas
+// Obtener estadísticas del chat (solo administradores)
 chatController.getChatStats = async (req, res) => {
     try {
+        // Validar que sea administrador
         if (!req.user || req.user.userType !== 'admin') {
             return res.status(403).json({
                 success: false,
@@ -457,6 +481,7 @@ chatController.getChatStats = async (req, res) => {
             });
         }
 
+        // Ejecutar consultas en paralelo para mejor rendimiento
         const [
             totalConversations,
             activeConversations,
@@ -485,6 +510,7 @@ chatController.getChatStats = async (req, res) => {
         });
 
     } catch (error) {
+        console.error('Error en getChatStats:', error);
         res.status(500).json({
             success: false,
             message: "Error interno del servidor",
