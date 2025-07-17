@@ -1,5 +1,12 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { useChat } from './Hooks/useChat';
+
+// Importar componentes modulares
+import DeleteMessageModal from './DeleteMessageModal';
+import MessageItem from './MessageItem';
+import FilePreview from './FilePreview';
+import MediaRenderer from './MediaRenderer';
+import MessageInput from './MessageInput';
 
 const ChatAdmin = () => {
     const {
@@ -12,32 +19,74 @@ const ChatAdmin = () => {
         error,
         unreadCount,
         sendMessage,
+        deleteMessage,
         selectConversation,
-        closeConversation,
         clearError,
         messagesEndRef
     } = useChat();
 
+    // Estados para el modal de eliminación
+    const [showDeleteModal, setShowDeleteModal] = useState(false);
+    const [messageToDelete, setMessageToDelete] = useState(null);
+
+    // Estados para archivos
+    const [selectedFile, setSelectedFile] = useState(null);
+    const [previewUrl, setPreviewUrl] = useState(null);
+
     // Manejar envío de mensaje
-    const handleSendMessage = async (e) => {
-        e.preventDefault();
-        if (!activeConversation || !newMessage.trim()) return;
+    const handleSendMessage = async (messageText, file = null) => {
+        if (!activeConversation || (!messageText?.trim() && !file)) return;
         
-        const success = await sendMessage(activeConversation.conversationId, newMessage);
+        const success = await sendMessage(activeConversation.conversationId, messageText, file);
         if (success) {
             setNewMessage('');
+            setSelectedFile(null);
+            setPreviewUrl(null);
         }
     };
 
-    // Manejar tecla Enter
-    const handleKeyPress = (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            handleSendMessage(e);
+    // Abrir modal de confirmación para eliminar
+    const handleDeleteMessage = (message) => {
+        setMessageToDelete(message);
+        setShowDeleteModal(true);
+    };
+
+    // Cerrar modal de eliminación
+    const handleCloseDeleteModal = () => {
+        setShowDeleteModal(false);
+        setMessageToDelete(null);
+    };
+
+    // Confirmar eliminación de mensaje
+    const handleConfirmDelete = async () => {
+        if (!messageToDelete) return;
+        
+        const success = await deleteMessage(messageToDelete._id);
+        if (success) {
+            handleCloseDeleteModal();
         }
     };
 
-    // Formatear fecha
+    // Manejar acciones de mensaje
+    const handleMessageAction = (action, message) => {
+        switch (action) {
+            case 'reply':
+                const replyText = `@${message.senderId?.fullName || 'Usuario'}: `;
+                setNewMessage(replyText);
+                break;
+            case 'quote':
+                const quoteText = `"${message.message || 'Archivo multimedia'}" - ${message.senderId?.fullName || 'Usuario'}\n\n`;
+                setNewMessage(quoteText);
+                break;
+            case 'delete':
+                handleDeleteMessage(message);
+                break;
+            default:
+                break;
+        }
+    };
+
+    // Formatear fecha y hora
     const formatTime = (date) => {
         return new Date(date).toLocaleTimeString('es-ES', {
             hour: '2-digit',
@@ -72,12 +121,12 @@ const ChatAdmin = () => {
     }
 
     return (
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 h-[600px] flex">
+        <div className="bg-white rounded-lg shadow-sm border border-gray-200 h-[80vh] md:h-[600px] flex flex-col md:flex-row">
             {/* Panel izquierdo - Lista de conversaciones */}
-            <div className="w-1/3 border-r border-gray-200 flex flex-col">
+            <div className="w-full md:w-1/3 border-b md:border-b-0 md:border-r border-gray-200 flex flex-col">
                 {/* Header */}
-                <div className="p-4 border-b border-gray-200 bg-gray-50">
-                    <h3 className="text-lg font-semibold text-gray-900" style={{ fontFamily: 'Poppins, sans-serif' }}>
+                <div className="p-3 md:p-4 border-b border-gray-200 bg-gray-50 flex-shrink-0">
+                    <h3 className="text-lg md:text-xl font-semibold text-gray-900" style={{ fontFamily: 'Poppins, sans-serif' }}>
                         Chat de Soporte
                         {unreadCount > 0 && (
                             <span className="ml-2 bg-red-500 text-white text-xs px-2 py-1 rounded-full">
@@ -103,17 +152,25 @@ const ChatAdmin = () => {
                             <div
                                 key={conversation.conversationId}
                                 onClick={() => selectConversation(conversation)}
-                                className={`p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors ${
+                                className={`p-3 md:p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors ${
                                     activeConversation?.conversationId === conversation.conversationId
                                         ? 'bg-[#E8ACD2] bg-opacity-20 border-l-4 border-l-[#E8ACD2]'
                                         : ''
                                 }`}
                             >
                                 <div className="flex items-start justify-between">
-                                    <div className="flex items-center space-x-3 flex-1">
+                                    <div className="flex items-center space-x-3 flex-1 min-w-0">
                                         {/* Avatar */}
-                                        <div className="w-10 h-10 bg-[#E8ACD2] rounded-full flex items-center justify-center text-white font-semibold">
-                                            {conversation.clientId?.fullName?.charAt(0)?.toUpperCase() || 'U'}
+                                        <div className="w-8 md:w-10 h-8 md:h-10 bg-[#E8ACD2] rounded-full flex items-center justify-center text-white font-semibold flex-shrink-0">
+                                            {conversation.clientId?.profilePicture ? (
+                                                <img 
+                                                    src={conversation.clientId.profilePicture} 
+                                                    alt={conversation.clientId.fullName}
+                                                    className="w-full h-full rounded-full object-cover"
+                                                />
+                                            ) : (
+                                                conversation.clientId?.fullName?.charAt(0)?.toUpperCase() || 'U'
+                                            )}
                                         </div>
                                         
                                         {/* Info del cliente */}
@@ -128,7 +185,7 @@ const ChatAdmin = () => {
                                     </div>
                                     
                                     {/* Indicadores */}
-                                    <div className="flex flex-col items-end space-y-1">
+                                    <div className="flex flex-col items-end space-y-1 flex-shrink-0 ml-2">
                                         <span className="text-xs text-gray-500">
                                             {conversation.lastMessageAt && formatTime(conversation.lastMessageAt)}
                                         </span>
@@ -155,40 +212,36 @@ const ChatAdmin = () => {
             </div>
 
             {/* Panel derecho - Chat activo */}
-            <div className="flex-1 flex flex-col">
+            <div className="flex-1 flex flex-col min-h-0">
                 {activeConversation ? (
                     <>
                         {/* Header del chat */}
-                        <div className="p-4 border-b border-gray-200 bg-gray-50">
-                            <div className="flex items-center justify-between">
-                                <div className="flex items-center space-x-3">
-                                    <div className="w-8 h-8 bg-[#E8ACD2] rounded-full flex items-center justify-center text-white font-semibold text-sm">
-                                        {activeConversation.clientId?.fullName?.charAt(0)?.toUpperCase() || 'U'}
-                                    </div>
-                                    <div>
-                                        <h4 className="font-medium text-gray-900" style={{ fontFamily: 'Poppins, sans-serif' }}>
-                                            {activeConversation.clientId?.fullName || 'Usuario'}
-                                        </h4>
-                                        <p className="text-sm text-gray-500" style={{ fontFamily: 'Poppins, sans-serif' }}>
-                                            {activeConversation.clientId?.email}
-                                        </p>
-                                    </div>
+                        <div className="p-3 md:p-4 border-b border-gray-200 bg-gray-50 flex-shrink-0">
+                            <div className="flex items-center space-x-3">
+                                <div className="w-6 md:w-8 h-6 md:h-8 bg-[#E8ACD2] rounded-full flex items-center justify-center text-white font-semibold text-sm flex-shrink-0">
+                                    {activeConversation.clientId?.profilePicture ? (
+                                        <img 
+                                            src={activeConversation.clientId.profilePicture} 
+                                            alt={activeConversation.clientId.fullName}
+                                            className="w-full h-full rounded-full object-cover"
+                                        />
+                                    ) : (
+                                        activeConversation.clientId?.fullName?.charAt(0)?.toUpperCase() || 'U'
+                                    )}
                                 </div>
-                                
-                                {activeConversation.status === 'active' && (
-                                    <button
-                                        onClick={() => closeConversation(activeConversation.conversationId)}
-                                        className="px-3 py-1 text-sm bg-red-100 text-red-800 rounded-lg hover:bg-red-200 transition-colors"
-                                        style={{ fontFamily: 'Poppins, sans-serif' }}
-                                    >
-                                        Cerrar chat
-                                    </button>
-                                )}
+                                <div className="min-w-0 flex-1">
+                                    <h4 className="font-medium text-gray-900 truncate" style={{ fontFamily: 'Poppins, sans-serif' }}>
+                                        {activeConversation.clientId?.fullName || 'Usuario'}
+                                    </h4>
+                                    <p className="text-sm text-gray-500 truncate" style={{ fontFamily: 'Poppins, sans-serif' }}>
+                                        {activeConversation.clientId?.email}
+                                    </p>
+                                </div>
                             </div>
                         </div>
 
                         {/* Área de mensajes */}
-                        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                        <div className="flex-1 overflow-y-auto p-3 md:p-4 space-y-4 min-h-0">
                             {messages.length === 0 ? (
                                 <div className="text-center text-gray-500 mt-8">
                                     <p style={{ fontFamily: 'Poppins, sans-serif' }}>
@@ -196,8 +249,7 @@ const ChatAdmin = () => {
                                     </p>
                                 </div>
                             ) : (
-                                messages.map((message, index) => {
-                                    const isAdmin = message.senderType === 'admin';
+                                messages.filter(message => !message.isDeleted).map((message, index) => {
                                     const showDate = index === 0 || 
                                         formatDate(message.createdAt) !== formatDate(messages[index - 1].createdAt);
                                     
@@ -211,22 +263,14 @@ const ChatAdmin = () => {
                                                 </div>
                                             )}
                                             
-                                            <div className={`flex ${isAdmin ? 'justify-end' : 'justify-start'}`}>
-                                                <div className={`max-w-xs lg:max-w-md px-4 py-2 rounded-lg ${
-                                                    isAdmin 
-                                                        ? 'bg-[#E8ACD2] text-white' 
-                                                        : 'bg-gray-100 text-gray-900'
-                                                }`}>
-                                                    <p className="text-sm" style={{ fontFamily: 'Poppins, sans-serif' }}>
-                                                        {message.message}
-                                                    </p>
-                                                    <p className={`text-xs mt-1 ${
-                                                        isAdmin ? 'text-white text-opacity-80' : 'text-gray-500'
-                                                    }`}>
-                                                        {formatTime(message.createdAt)}
-                                                    </p>
-                                                </div>
-                                            </div>
+                                            <MessageItem
+                                                message={message}
+                                                isOwnMessage={message.senderType === 'admin'}
+                                                isAdmin={true}
+                                                onAction={handleMessageAction}
+                                                MediaRenderer={MediaRenderer}
+                                                formatTime={formatTime}
+                                            />
                                         </div>
                                     );
                                 })
@@ -234,31 +278,30 @@ const ChatAdmin = () => {
                             <div ref={messagesEndRef} />
                         </div>
 
-                        {/* Input de mensaje */}
-                        {activeConversation.status === 'active' && (
-                            <div className="p-4 border-t border-gray-200 bg-white">
-                                <form onSubmit={handleSendMessage} className="flex space-x-3">
-                                    <textarea
-                                        value={newMessage}
-                                        onChange={(e) => setNewMessage(e.target.value)}
-                                        onKeyPress={handleKeyPress}
-                                        placeholder="Escribe tu respuesta..."
-                                        className="flex-1 resize-none border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#E8ACD2] focus:border-transparent"
-                                        style={{ fontFamily: 'Poppins, sans-serif' }}
-                                        rows="2"
-                                        disabled={!activeConversation}
-                                    />
-                                    <button
-                                        type="submit"
-                                        disabled={!newMessage.trim() || !activeConversation}
-                                        className="px-4 py-2 bg-[#E8ACD2] text-white rounded-lg hover:bg-[#E096C8] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                                        style={{ fontFamily: 'Poppins, sans-serif' }}
-                                    >
-                                        Enviar
-                                    </button>
-                                </form>
-                            </div>
+                        {/* Preview de archivo seleccionado */}
+                        {selectedFile && (
+                            <FilePreview 
+                                file={selectedFile}
+                                previewUrl={previewUrl}
+                                onClear={() => {
+                                    setSelectedFile(null);
+                                    setPreviewUrl(null);
+                                }}
+                            />
                         )}
+
+                        {/* Input de mensaje */}
+                        <MessageInput
+                            value={newMessage}
+                            onChange={setNewMessage}
+                            onSend={handleSendMessage}
+                            onFileSelect={(file, preview) => {
+                                setSelectedFile(file);
+                                setPreviewUrl(preview);
+                            }}
+                            disabled={!activeConversation}
+                            placeholder="Escribe tu respuesta..."
+                        />
                     </>
                 ) : (
                     <div className="flex-1 flex items-center justify-center text-gray-500">
@@ -273,6 +316,15 @@ const ChatAdmin = () => {
                     </div>
                 )}
             </div>
+
+            {/* Modal de confirmación para eliminar mensaje */}
+            <DeleteMessageModal
+                isOpen={showDeleteModal}
+                message={messageToDelete}
+                onClose={handleCloseDeleteModal}
+                onConfirm={handleConfirmDelete}
+                formatTime={formatTime}
+            />
 
             {/* Modal de error */}
             {error && (

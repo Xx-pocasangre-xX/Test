@@ -1,7 +1,37 @@
 import ChatMessage from "../models/ChatMessage.js";
 import ChatConversation from "../models/ChatConversation.js";
 import clientsModel from "../models/Clients.js";
-import { emitNewMessage, emitConversationClosed, emitMessagesRead, emitChatStats } from "../utils/socketConfig.js";
+import { emitNewMessage, emitMessageDeleted, emitMessagesRead, emitChatStats } from "../utils/socketConfig.js";
+import multer from 'multer';
+import { CloudinaryStorage } from 'multer-storage-cloudinary';
+import { v2 as cloudinary } from 'cloudinary';
+import { config } from '../config.js';
+
+// Configurar Cloudinary
+cloudinary.config({
+    cloud_name: config.cloudinary.cloud_name,
+    api_key: config.cloudinary.cloudinary_api_key,
+    api_secret: config.cloudinary.cloudinary_api_secret
+});
+
+// Configurar almacenamiento en Cloudinary para archivos multimedia
+const storage = new CloudinaryStorage({
+    cloudinary: cloudinary,
+    params: {
+        folder: 'chat_media',
+        allowed_formats: ['jpg', 'jpeg', 'png', 'gif', 'pdf', 'doc', 'docx', 'mp4', 'mp3', 'wav'],
+        transformation: [
+            { width: 800, height: 600, crop: 'limit', quality: 'auto' }
+        ]
+    }
+});
+
+export const upload = multer({ 
+    storage: storage,
+    limits: {
+        fileSize: 10 * 1024 * 1024 // 10MB límite
+    }
+});
 
 const chatController = {};
 
@@ -14,6 +44,9 @@ const generateConversationId = (clientId) => {
 chatController.getOrCreateConversation = async (req, res) => {
     try {
         const { clientId } = req.params;
+        
+        console.log('Obteniendo conversación para cliente:', clientId);
+        console.log('Usuario autenticado:', req.user);
         
         // Validar usuario autenticado
         if (!req.user) {
@@ -51,6 +84,9 @@ chatController.getOrCreateConversation = async (req, res) => {
                 clientId: clientId
             });
             await conversation.save();
+            console.log('Nueva conversación creada:', conversationId);
+        } else {
+            console.log('Conversación existente encontrada:', conversation.conversationId);
         }
 
         // Preparar respuesta con información del cliente
@@ -59,7 +95,8 @@ chatController.getOrCreateConversation = async (req, res) => {
             clientId: {
                 _id: client._id,
                 fullName: client.fullName,
-                email: client.email
+                email: client.email,
+                profilePicture: client.profilePicture || null
             }
         };
 
@@ -78,13 +115,19 @@ chatController.getOrCreateConversation = async (req, res) => {
     }
 };
 
-// Enviar mensaje
+// Enviar mensaje (con archivo multimedia opcional) - CORREGIDO
 chatController.sendMessage = async (req, res) => {
     try {
+        console.log('=== ENVIAR MENSAJE ===');
+        console.log('Body:', req.body);
+        console.log('File:', req.file);
+        console.log('User:', req.user);
+        
         const { conversationId, message } = req.body;
         
         // Validar usuario autenticado
         if (!req.user) {
+            console.error('Usuario no autenticado');
             return res.status(401).json({
                 success: false,
                 message: "Usuario no autenticado"
@@ -93,11 +136,20 @@ chatController.sendMessage = async (req, res) => {
 
         const { id: senderId, userType: senderType } = req.user;
 
-        // Validar datos requeridos
-        if (!conversationId || !message?.trim()) {
+        // Validar datos requeridos (mensaje o archivo)
+        if (!conversationId) {
+            console.error('ConversationId requerido');
             return res.status(400).json({
                 success: false,
-                message: "Conversación y mensaje son requeridos"
+                message: "ID de conversación es requerido"
+            });
+        }
+
+        if (!message?.trim() && !req.file) {
+            console.error('Mensaje o archivo requerido');
+            return res.status(400).json({
+                success: false,
+                message: "Debes enviar un mensaje de texto o un archivo"
             });
         }
 
@@ -107,6 +159,7 @@ chatController.sendMessage = async (req, res) => {
         });
         
         if (!conversation) {
+            console.error('Conversación no encontrada:', conversationId);
             return res.status(404).json({
                 success: false,
                 message: "Conversación no encontrada"
@@ -115,6 +168,7 @@ chatController.sendMessage = async (req, res) => {
 
         // Verificar permisos - los clientes solo pueden enviar mensajes a su conversación
         if (senderType === 'Customer' && conversation.clientId !== senderId) {
+            console.error('Permisos insuficientes:', { senderType, conversationClientId: conversation.clientId, senderId });
             return res.status(403).json({
                 success: false,
                 message: "No tienes permisos para enviar mensajes a esta conversación"
@@ -124,19 +178,40 @@ chatController.sendMessage = async (req, res) => {
         // Crear mensaje con el ID del remitente
         const messageSenderId = senderType === 'admin' ? 'admin' : senderId;
 
-        const chatMessage = new ChatMessage({
+        const messageData = {
             conversationId,
             senderId: messageSenderId,
             senderType,
-            message: message.trim(),
+            message: message?.trim() || '',
             status: 'sent'
-        });
+        };
 
+        // CORRECCIÓN: Solo agregar media si hay archivo
+        if (req.file) {
+            const fileType = req.file.mimetype.startsWith('image/') ? 'image' :
+                           req.file.mimetype.startsWith('video/') ? 'video' :
+                           req.file.mimetype.startsWith('audio/') ? 'audio' : 'document';
+            
+            messageData.media = {
+                type: fileType,
+                url: req.file.path,
+                filename: req.file.originalname,
+                size: req.file.size
+            };
+            console.log('Archivo adjunto:', messageData.media);
+        }
+        // IMPORTANTE: No agregar media si no hay archivo (esto evita el error de null)
+
+        console.log('Datos del mensaje a guardar:', messageData);
+
+        const chatMessage = new ChatMessage(messageData);
         await chatMessage.save();
+
+        console.log('Mensaje guardado exitosamente:', chatMessage._id);
 
         // Actualizar la conversación con el último mensaje
         const updateData = {
-            lastMessage: message.trim(),
+            lastMessage: message?.trim() || `📎 ${req.file?.originalname || 'Archivo multimedia'}`,
             lastMessageAt: new Date(),
             status: 'active'
         };
@@ -153,25 +228,49 @@ chatController.sendMessage = async (req, res) => {
             updateData
         );
 
+        // Obtener información del remitente
+        let senderInfo = {
+            _id: messageSenderId,
+            fullName: senderType === 'admin' ? 'Atención al Cliente' : 'Cliente',
+            email: req.user.email || '',
+            profilePicture: null
+        };
+
+        if (senderType === 'Customer') {
+            const clientInfo = await clientsModel.findById(senderId, 'fullName email profilePicture').lean();
+            if (clientInfo) {
+                senderInfo = {
+                    _id: senderId,
+                    fullName: clientInfo.fullName,
+                    email: clientInfo.email,
+                    profilePicture: clientInfo.profilePicture || null
+                };
+            }
+        } else {
+            // Para admin, usar imagen de marquesa
+            senderInfo.profilePicture = '/assets/marquesaMiniLogo.png';
+        }
+
         // Preparar respuesta del mensaje
         const responseMessage = {
             ...chatMessage.toObject(),
-            senderId: {
-                _id: messageSenderId,
-                fullName: senderType === 'admin' ? 'Administrador' : 'Cliente',
-                email: req.user.email || ''
-            }
+            senderId: senderInfo
         };
+
+        console.log('Mensaje preparado para respuesta:', responseMessage._id);
 
         // ===== EMISIÓN EN TIEMPO REAL =====
         // Obtener instancia de Socket.IO
         const io = req.app.get('io');
         if (io) {
+            console.log('Emitiendo mensaje via Socket.IO...');
             // Emitir nuevo mensaje a todos los usuarios en la conversación
             emitNewMessage(io, conversationId, responseMessage);
             
             // Emitir estadísticas actualizadas a administradores
             emitChatStats(io);
+        } else {
+            console.warn('Socket.IO no disponible');
         }
 
         res.status(201).json({
@@ -181,6 +280,98 @@ chatController.sendMessage = async (req, res) => {
 
     } catch (error) {
         console.error('Error en sendMessage:', error);
+        
+        // Manejo específico del error de validación de Mongoose
+        if (error.name === 'ValidationError') {
+            return res.status(400).json({
+                success: false,
+                message: "Error de validación en los datos del mensaje",
+                details: error.message
+            });
+        }
+        
+        res.status(500).json({
+            success: false,
+            message: "Error interno del servidor",
+            error: error.message
+        });
+    }
+};
+
+// Eliminar mensaje
+chatController.deleteMessage = async (req, res) => {
+    try {
+        console.log('=== ELIMINAR MENSAJE ===');
+        const { messageId } = req.params;
+        console.log('ID del mensaje a eliminar:', messageId);
+        console.log('Usuario:', req.user);
+        
+        // Validar usuario autenticado
+        if (!req.user) {
+            console.error('Usuario no autenticado');
+            return res.status(401).json({
+                success: false,
+                message: "Usuario no autenticado"
+            });
+        }
+
+        const { id: userId, userType } = req.user;
+
+        // Buscar el mensaje
+        const message = await ChatMessage.findById(messageId);
+        if (!message) {
+            console.error('Mensaje no encontrado:', messageId);
+            return res.status(404).json({
+                success: false,
+                message: "Mensaje no encontrado"
+            });
+        }
+
+        console.log('Mensaje encontrado:', {
+            id: message._id,
+            senderId: message.senderId,
+            senderType: message.senderType,
+            conversationId: message.conversationId
+        });
+
+        // Verificar permisos - solo el remitente o admin puede eliminar
+        const messageSenderId = userType === 'admin' ? 'admin' : userId;
+        
+        console.log('Verificando permisos:', {
+            messageSenderId,
+            messageOriginalSender: message.senderId,
+            userType,
+            canDelete: message.senderId === messageSenderId || userType === 'admin'
+        });
+
+        if (message.senderId !== messageSenderId && userType !== 'admin') {
+            console.error('Permisos insuficientes para eliminar mensaje');
+            return res.status(403).json({
+                success: false,
+                message: "No tienes permisos para eliminar este mensaje"
+            });
+        }
+
+        // Marcar como eliminado
+        await message.softDelete(messageSenderId);
+        console.log('Mensaje marcado como eliminado exitosamente');
+
+        // ===== EMISIÓN EN TIEMPO REAL =====
+        const io = req.app.get('io');
+        if (io) {
+            console.log('Emitiendo eliminación via Socket.IO...');
+            emitMessageDeleted(io, message.conversationId, messageId, messageSenderId);
+        } else {
+            console.warn('Socket.IO no disponible');
+        }
+
+        res.status(200).json({
+            success: true,
+            message: "Mensaje eliminado exitosamente"
+        });
+
+    } catch (error) {
+        console.error('Error en deleteMessage:', error);
         res.status(500).json({
             success: false,
             message: "Error interno del servidor",
@@ -194,6 +385,8 @@ chatController.getMessages = async (req, res) => {
     try {
         const { conversationId } = req.params;
         const { page = 1, limit = 50 } = req.query;
+        
+        console.log('Obteniendo mensajes:', { conversationId, page, limit });
         
         // Validar usuario autenticado
         if (!req.user) {
@@ -225,7 +418,7 @@ chatController.getMessages = async (req, res) => {
             });
         }
 
-        // Obtener mensajes con paginación
+        // Obtener mensajes con paginación (incluyendo eliminados para mostrar placeholder)
         const skip = (parseInt(page) - 1) * parseInt(limit);
         const messages = await ChatMessage.find({ conversationId })
             .sort({ createdAt: -1 })
@@ -233,14 +426,39 @@ chatController.getMessages = async (req, res) => {
             .skip(skip)
             .lean();
 
+        console.log(`Encontrados ${messages.length} mensajes`);
+
         // Población manual de la información del remitente
-        const populatedMessages = messages.map(message => ({
-            ...message,
-            senderId: {
+        const populatedMessages = await Promise.all(messages.map(async (message) => {
+            let senderInfo = {
                 _id: message.senderId,
-                fullName: message.senderType === 'admin' ? 'Administrador' : 'Cliente',
-                email: ''
+                fullName: message.senderType === 'admin' ? 'Atención al Cliente' : 'Cliente',
+                email: '',
+                profilePicture: null
+            };
+
+            if (message.senderType === 'Customer' && message.senderId !== 'admin') {
+                try {
+                    const clientInfo = await clientsModel.findById(message.senderId, 'fullName email profilePicture').lean();
+                    if (clientInfo) {
+                        senderInfo = {
+                            _id: message.senderId,
+                            fullName: clientInfo.fullName,
+                            email: clientInfo.email,
+                            profilePicture: clientInfo.profilePicture || null
+                        };
+                    }
+                } catch (error) {
+                    console.error('Error obteniendo info del cliente:', error);
+                }
+            } else if (message.senderType === 'admin') {
+                senderInfo.profilePicture = '/assets/marquesaMiniLogo.png';
             }
+
+            return {
+                ...message,
+                senderId: senderInfo
+            };
         }));
 
         // Contar total de mensajes para paginación
@@ -289,7 +507,8 @@ chatController.markAsRead = async (req, res) => {
             { 
                 conversationId,
                 senderId: { $ne: queryUserId },
-                isRead: false
+                isRead: false,
+                isDeleted: false
             },
             { 
                 isRead: true,
@@ -417,59 +636,6 @@ chatController.getAllConversations = async (req, res) => {
     }
 };
 
-// Cerrar conversación (solo administradores)
-chatController.closeConversation = async (req, res) => {
-    try {
-        // Validar que sea administrador
-        if (!req.user || req.user.userType !== 'admin') {
-            return res.status(403).json({
-                success: false,
-                message: "Acceso denegado"
-            });
-        }
-
-        const { conversationId } = req.params;
-
-        // Buscar y actualizar la conversación usando el método de instancia
-        const conversation = await ChatConversation.findOne({ conversationId });
-
-        if (!conversation) {
-            return res.status(404).json({
-                success: false,
-                message: "Conversación no encontrada"
-            });
-        }
-
-        // Usar el método de instancia para cerrar la conversación
-        await conversation.close();
-
-        // ===== EMISIÓN EN TIEMPO REAL =====
-        // Obtener instancia de Socket.IO
-        const io = req.app.get('io');
-        if (io) {
-            // Emitir evento de conversación cerrada
-            emitConversationClosed(io, conversationId);
-            
-            // Emitir estadísticas actualizadas
-            emitChatStats(io);
-        }
-
-        res.status(200).json({
-            success: true,
-            message: "Conversación cerrada exitosamente",
-            conversation: conversation.toObject()
-        });
-
-    } catch (error) {
-        console.error('Error en closeConversation:', error);
-        res.status(500).json({
-            success: false,
-            message: "Error interno del servidor",
-            error: error.message
-        });
-    }
-};
-
 // Obtener estadísticas del chat (solo administradores)
 chatController.getChatStats = async (req, res) => {
     try {
@@ -490,7 +656,7 @@ chatController.getChatStats = async (req, res) => {
         ] = await Promise.all([
             ChatConversation.countDocuments(),
             ChatConversation.countDocuments({ status: 'active' }),
-            ChatMessage.countDocuments(),
+            ChatMessage.countDocuments({ isDeleted: false }),
             ChatConversation.aggregate([
                 { $group: { _id: null, total: { $sum: '$unreadCountAdmin' } } }
             ])

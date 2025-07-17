@@ -179,6 +179,19 @@ export const useSocket = () => {
         return () => {}; // Función vacía si no hay socket
     }, []);
 
+    // Escuchar mensajes eliminados
+    const onMessageDeleted = useCallback((callback) => {
+        if (socketRef.current) {
+            socketRef.current.on('message_deleted', callback);
+            return () => {
+                if (socketRef.current) {
+                    socketRef.current.off('message_deleted', callback);
+                }
+            };
+        }
+        return () => {};
+    }, []);
+
     // Escuchar actualizaciones de conversaciones
     const onConversationUpdated = useCallback((callback) => {
         if (socketRef.current) {
@@ -303,6 +316,7 @@ export const useSocket = () => {
         
         // Suscripciones a eventos
         onNewMessage,
+        onMessageDeleted,
         onConversationUpdated,
         onConversationClosed,
         onMessagesRead,

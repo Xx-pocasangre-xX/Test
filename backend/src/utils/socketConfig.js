@@ -41,6 +41,8 @@ export const setupSocketIO = (io) => {
     io.use(authenticateSocket);
     
     io.on('connection', (socket) => {
+        console.log(`Usuario conectado: ${socket.user.id} (${socket.user.userType})`);
+        
         // Almacenar información del usuario conectado
         connectedUsers.set(socket.id, {
             userId: socket.user.id,
@@ -65,6 +67,7 @@ export const setupSocketIO = (io) => {
             if (!conversationId) return;
             
             socket.join(`conversation_${conversationId}`);
+            console.log(`Usuario ${socket.user.id} se unió a conversación ${conversationId}`);
             
             // Notificar a otros usuarios en la conversación
             socket.to(`conversation_${conversationId}`).emit('user_joined_conversation', {
@@ -78,6 +81,7 @@ export const setupSocketIO = (io) => {
             if (!conversationId) return;
             
             socket.leave(`conversation_${conversationId}`);
+            console.log(`Usuario ${socket.user.id} salió de conversación ${conversationId}`);
             
             // Notificar a otros usuarios en la conversación
             socket.to(`conversation_${conversationId}`).emit('user_left_conversation', {
@@ -107,7 +111,9 @@ export const setupSocketIO = (io) => {
         // === EVENTOS DE CONEXIÓN ===
         
         // Manejar desconexión
-        socket.on('disconnect', () => {
+        socket.on('disconnect', (reason) => {
+            console.log(`Usuario desconectado: ${socket.user.id} - Razón: ${reason}`);
+            
             // Remover de usuarios conectados
             connectedUsers.delete(socket.id);
             
@@ -156,6 +162,8 @@ export const emitNewMessage = (io, conversationId, message, excludeSocketId = nu
         timestamp: new Date()
     };
     
+    console.log(`Emitiendo nuevo mensaje en conversación ${conversationId}`);
+    
     if (excludeSocketId) {
         // Emitir a todos en la conversación excepto al remitente
         io.to(`conversation_${conversationId}`).except(excludeSocketId).emit('new_message', eventData);
@@ -167,8 +175,20 @@ export const emitNewMessage = (io, conversationId, message, excludeSocketId = nu
     // Emitir a todos los administradores para actualizar lista de conversaciones
     io.to('admins').emit('conversation_updated', {
         conversationId,
-        lastMessage: message.message,
+        lastMessage: message.message || 'Archivo multimedia',
         lastMessageAt: new Date()
+    });
+};
+
+// Emitir cuando un mensaje es eliminado
+export const emitMessageDeleted = (io, conversationId, messageId, deletedBy) => {
+    console.log(`Emitiendo mensaje eliminado: ${messageId} en conversación ${conversationId}`);
+    
+    io.to(`conversation_${conversationId}`).emit('message_deleted', {
+        conversationId,
+        messageId,
+        deletedBy,
+        timestamp: new Date()
     });
 };
 
@@ -210,7 +230,7 @@ export const emitChatStats = async (io) => {
         ] = await Promise.all([
             ChatConversation.countDocuments(),
             ChatConversation.countDocuments({ status: 'active' }),
-            ChatMessage.countDocuments(),
+            ChatMessage.countDocuments({ isDeleted: false }),
             ChatConversation.aggregate([
                 { $group: { _id: null, total: { $sum: '$unreadCountAdmin' } } }
             ])

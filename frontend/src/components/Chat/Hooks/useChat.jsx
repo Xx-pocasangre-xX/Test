@@ -1,4 +1,3 @@
-// Importa los hooks useState y useEffect desde React
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useAuth } from "../../../context/AuthContext";
 import { useSocket } from "./useSocket";
@@ -10,10 +9,17 @@ export const useChat = () => {
     const [activeConversation, setActiveConversation] = useState(null);
     const [messages, setMessages] = useState([]);
     const [newMessage, setNewMessage] = useState('');
+    const [selectedFile, setSelectedFile] = useState(null);
+    const [previewUrl, setPreviewUrl] = useState(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
     const [isConnected, setIsConnected] = useState(false);
     const [unreadCount, setUnreadCount] = useState(0);
+    
+    // Estados para modal de eliminación
+    const [showDeleteModal, setShowDeleteModal] = useState(false);
+    const [messageToDelete, setMessageToDelete] = useState(null);
+    const [isDeleting, setIsDeleting] = useState(false);
     
     // Estados para paginación
     const [currentPage, setCurrentPage] = useState(1);
@@ -30,6 +36,7 @@ export const useChat = () => {
     const isInitializedRef = useRef(false);
     const lastMessageCountRef = useRef(0);
     const activeConversationRef = useRef(null);
+    const fileInputRef = useRef(null);
     
     const { user, isAuthenticated } = useAuth();
     
@@ -45,7 +52,8 @@ export const useChat = () => {
         onConversationClosed,
         onMessagesRead,
         onUserTyping,
-        onChatStatsUpdated
+        onChatStatsUpdated,
+        onMessageDeleted
     } = useSocket();
 
     // URL base de la API
@@ -59,6 +67,8 @@ export const useChat = () => {
     // Función para realizar peticiones a la API
     const apiRequest = useCallback(async (url, options = {}) => {
         try {
+            console.log(`API Request: ${options.method || 'GET'} ${url}`);
+            
             const response = await fetch(`${API_BASE}${url}`, {
                 credentials: 'include',
                 headers: {
@@ -67,6 +77,13 @@ export const useChat = () => {
                 },
                 ...options
             });
+
+            const contentType = response.headers.get('content-type');
+            if (!contentType || !contentType.includes('application/json')) {
+                const text = await response.text();
+                console.error('Respuesta no es JSON:', text);
+                throw new Error('El servidor no devolvió una respuesta JSON válida');
+            }
 
             const data = await response.json();
             
@@ -81,6 +98,37 @@ export const useChat = () => {
         }
     }, []);
 
+    // Función para realizar peticiones con FormData (para archivos)
+    const apiRequestFormData = useCallback(async (url, formData) => {
+        try {
+            console.log(`API Request FormData: POST ${url}`);
+            
+            const response = await fetch(`${API_BASE}${url}`, {
+                method: 'POST',
+                credentials: 'include',
+                body: formData
+            });
+
+            const contentType = response.headers.get('content-type');
+            if (!contentType || !contentType.includes('application/json')) {
+                const text = await response.text();
+                console.error('Respuesta no es JSON:', text);
+                throw new Error('El servidor no devolvió una respuesta JSON válida');
+            }
+
+            const data = await response.json();
+            
+            if (!response.ok) {
+                throw new Error(data.message || `Error ${response.status}`);
+            }
+            
+            return data;
+        } catch (error) {
+            console.error('Error en petición API con FormData:', error);
+            throw error;
+        }
+    }, []);
+
     // Función para hacer scroll al final de los mensajes
     const scrollToBottom = useCallback(() => {
         if (messagesEndRef.current) {
@@ -88,30 +136,65 @@ export const useChat = () => {
         }
     }, []);
 
-    // Configurar eventos de Socket.IO cuando se inicializa
+    // Funciones para manejo de archivos
+    const handleFileSelect = useCallback((e) => {
+        const file = e.target.files[0];
+        if (file) {
+            setSelectedFile(file);
+            
+            // Crear preview para imágenes
+            if (file.type.startsWith('image/')) {
+                const reader = new FileReader();
+                reader.onload = (e) => setPreviewUrl(e.target.result);
+                reader.readAsDataURL(file);
+            } else {
+                setPreviewUrl(null);
+            }
+        }
+    }, []);
+
+    const clearSelectedFile = useCallback(() => {
+        setSelectedFile(null);
+        setPreviewUrl(null);
+        if (fileInputRef.current) {
+            fileInputRef.current.value = '';
+        }
+    }, []);
+
+    // Funciones para modal de eliminación
+    const openDeleteModal = useCallback((message) => {
+        setMessageToDelete(message);
+        setShowDeleteModal(true);
+    }, []);
+
+    const closeDeleteModal = useCallback(() => {
+        setShowDeleteModal(false);
+        setMessageToDelete(null);
+        setIsDeleting(false);
+    }, []);
+
+    // Configurar eventos de Socket.IO
     useEffect(() => {
         if (!socketConnected || !isAuthenticated) return;
 
-        // Configurar listeners de Socket.IO
+        console.log('Configurando listeners de Socket.IO...');
+
         const unsubscribeNewMessage = onNewMessage((data) => {
-            // Agregar nuevo mensaje recibido
+            console.log('Nuevo mensaje recibido:', data);
             setMessages(prev => {
-                // Verificar que no exista ya el mensaje
                 const exists = prev.find(msg => msg._id === data.message._id);
                 if (exists) return prev;
                 
-                // Agregar nuevo mensaje y hacer scroll
                 setTimeout(() => scrollToBottom(), 100);
                 return [...prev, data.message];
             });
             
-            // Actualizar conversaciones si es admin
-            if (user.userType === 'admin') {
+            if (user?.userType === 'admin') {
                 setConversations(prev => prev.map(conv => 
                     conv.conversationId === data.conversationId
                         ? { 
                             ...conv, 
-                            lastMessage: data.message.message,
+                            lastMessage: data.message.message || 'Archivo multimedia',
                             lastMessageAt: data.timestamp,
                             unreadCountAdmin: data.message.senderType !== 'admin' 
                                 ? (conv.unreadCountAdmin || 0) + 1 
@@ -122,8 +205,13 @@ export const useChat = () => {
             }
         });
 
+        const unsubscribeMessageDeleted = onMessageDeleted((data) => {
+            console.log('Mensaje eliminado via Socket.IO:', data);
+            setMessages(prev => prev.filter(msg => msg._id !== data.messageId));
+        });
+
         const unsubscribeConversationUpdated = onConversationUpdated((data) => {
-            if (user.userType === 'admin') {
+            if (user?.userType === 'admin') {
                 setConversations(prev => prev.map(conv => 
                     conv.conversationId === data.conversationId
                         ? { ...conv, ...data }
@@ -133,29 +221,25 @@ export const useChat = () => {
         });
 
         const unsubscribeConversationClosed = onConversationClosed((data) => {
-            // Actualizar estado de la conversación
             setConversations(prev => prev.map(conv => 
                 conv.conversationId === data.conversationId
                     ? { ...conv, status: 'closed' }
                     : conv
             ));
             
-            // Si es la conversación activa, mostrar notificación
             if (activeConversationRef.current?.conversationId === data.conversationId) {
                 setError('La conversación ha sido cerrada por el administrador');
             }
         });
 
         const unsubscribeMessagesRead = onMessagesRead((data) => {
-            // Marcar mensajes como leídos en el estado local
             setMessages(prev => prev.map(msg => ({
                 ...msg,
                 isRead: true,
                 readAt: data.timestamp
             })));
             
-            // Actualizar contadores de no leídos
-            if (user.userType === 'admin') {
+            if (user?.userType === 'admin') {
                 setConversations(prev => prev.map(conv => 
                     conv.conversationId === data.conversationId
                         ? { ...conv, unreadCountAdmin: 0 }
@@ -165,7 +249,7 @@ export const useChat = () => {
         });
 
         const unsubscribeUserTyping = onUserTyping((data) => {
-            if (data.userId !== user.id) {
+            if (data.userId !== user?.id) {
                 setTypingUsers(prev => {
                     const newSet = new Set(prev);
                     if (data.isTyping) {
@@ -179,21 +263,22 @@ export const useChat = () => {
         });
 
         const unsubscribeChatStats = onChatStatsUpdated((stats) => {
-            if (user.userType === 'admin') {
+            if (user?.userType === 'admin') {
                 setUnreadCount(stats.unreadMessages || 0);
             }
         });
 
-        // Cleanup function
         return () => {
+            console.log('Limpiando listeners de Socket.IO...');
             unsubscribeNewMessage?.();
+            unsubscribeMessageDeleted?.();
             unsubscribeConversationUpdated?.();
             unsubscribeConversationClosed?.();
             unsubscribeMessagesRead?.();
             unsubscribeUserTyping?.();
             unsubscribeChatStats?.();
         };
-    }, [socketConnected, isAuthenticated, user?.id, user?.userType, onNewMessage, onConversationUpdated, onConversationClosed, onMessagesRead, onUserTyping, onChatStatsUpdated, scrollToBottom]);
+    }, [socketConnected, isAuthenticated, user?.id, user?.userType, onNewMessage, onMessageDeleted, onConversationUpdated, onConversationClosed, onMessagesRead, onUserTyping, onChatStatsUpdated, scrollToBottom]);
 
     // Obtener o crear conversación para el cliente actual
     const getOrCreateConversation = useCallback(async (showLoader = true) => {
@@ -223,11 +308,9 @@ export const useChat = () => {
             if (showLoader) setLoading(true);
             const data = await apiRequest('/admin/conversations');
             
-            // Solo actualizar si hay cambios significativos
             setConversations(prevConversations => {
                 const newConversations = data.conversations || [];
                 
-                // Comparar cambios básicos
                 const hasChanges = JSON.stringify(prevConversations.map(c => ({
                     id: c.conversationId,
                     lastMessage: c.lastMessage,
@@ -247,7 +330,6 @@ export const useChat = () => {
                 return newConversations;
             });
             
-            // Calcular mensajes no leídos para administradores
             const totalUnread = (data.conversations || []).reduce((sum, conv) => 
                 sum + (conv.unreadCountAdmin || 0), 0);
             setUnreadCount(totalUnread);
@@ -269,10 +351,9 @@ export const useChat = () => {
             if (showLoader) setLoadingMessages(true);
             const data = await apiRequest(`/messages/${conversationId}?page=${page}&limit=50`);
             
-            const newMessages = data.messages || [];
+            const newMessages = (data.messages || []).filter(msg => !msg.isDeleted);
             
             if (resetMessages || page === 1) {
-                // Verificar si hay cambios antes de actualizar
                 setMessages(prevMessages => {
                     const hasSameIds = JSON.stringify(prevMessages.map(m => m._id)) === 
                                      JSON.stringify(newMessages.map(m => m._id));
@@ -286,14 +367,12 @@ export const useChat = () => {
                 });
                 setCurrentPage(1);
             } else {
-                // Cargar más mensajes (paginación)
                 setMessages(prev => [...newMessages, ...prev]);
             }
             
             setHasMoreMessages(data.pagination?.hasNextPage || false);
             setCurrentPage(page);
             
-            // Hacer scroll al final si hay mensajes nuevos
             if ((resetMessages || page === 1) && newMessages.length > lastMessageCountRef.current) {
                 setTimeout(() => scrollToBottom(), 100);
             }
@@ -303,7 +382,7 @@ export const useChat = () => {
         } finally {
             if (showLoader) setLoadingMessages(false);
         }
-    }, [apiRequest]);
+    }, [apiRequest, scrollToBottom]);
 
     // Manejar cambios en el input para indicar que está escribiendo
     const handleMessageChange = useCallback((value) => {
@@ -311,23 +390,19 @@ export const useChat = () => {
         
         if (!activeConversationRef.current) return;
         
-        // Iniciar indicador de escritura
         if (value.trim() && !typingTimeoutRef.current) {
             startTyping(activeConversationRef.current.conversationId);
         }
         
-        // Limpiar timeout anterior
         if (typingTimeoutRef.current) {
             clearTimeout(typingTimeoutRef.current);
         }
         
-        // Parar indicador de escritura después de 2 segundos sin escribir
         typingTimeoutRef.current = setTimeout(() => {
             stopTyping(activeConversationRef.current?.conversationId);
             typingTimeoutRef.current = null;
         }, 2000);
         
-        // Si no hay texto, parar inmediatamente
         if (!value.trim()) {
             stopTyping(activeConversationRef.current.conversationId);
             if (typingTimeoutRef.current) {
@@ -337,13 +412,18 @@ export const useChat = () => {
         }
     }, [startTyping, stopTyping]);
 
-    // Enviar un mensaje (ya no necesita polling, Socket.IO maneja tiempo real)
-    const sendMessage = useCallback(async (conversationId, message) => {
-        if (!conversationId || !message.trim()) {
+    // Enviar un mensaje (con archivo multimedia opcional)
+    const sendMessage = useCallback(async (conversationId, message, file = null) => {
+        if (!conversationId) {
+            setError('ID de conversación requerido');
+            return false;
+        }
+
+        if (!message?.trim() && !file) {
+            setError('Debes escribir un mensaje o seleccionar un archivo');
             return false;
         }
         
-        // Parar indicador de escritura antes de enviar
         stopTyping(conversationId);
         if (typingTimeoutRef.current) {
             clearTimeout(typingTimeoutRef.current);
@@ -351,30 +431,77 @@ export const useChat = () => {
         }
         
         try {
-            const data = await apiRequest('/message', {
-                method: 'POST',
-                body: JSON.stringify({
-                    conversationId,
-                    message: message.trim()
-                })
-            });
+            let data;
             
-            // El mensaje se agregará automáticamente via Socket.IO
-            // Solo actualizamos conversaciones si es admin
-            if (user.userType === 'admin') {
+            if (file) {
+                const formData = new FormData();
+                formData.append('conversationId', conversationId);
+                if (message?.trim()) {
+                    formData.append('message', message.trim());
+                }
+                formData.append('file', file);
+                
+                data = await apiRequestFormData('/message', formData);
+            } else {
+                data = await apiRequest('/message', {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        conversationId,
+                        message: message.trim()
+                    })
+                });
+            }
+            
+            if (user?.userType === 'admin') {
                 setConversations(prev => prev.map(conv => 
                     conv.conversationId === conversationId 
-                        ? { ...conv, lastMessage: message.trim(), lastMessageAt: new Date() }
+                        ? { 
+                            ...conv, 
+                            lastMessage: message?.trim() || 'Archivo multimedia', 
+                            lastMessageAt: new Date() 
+                        }
                         : conv
                 ));
             }
             
             return true;
+            
         } catch (error) {
-            setError('Error al enviar mensaje');
+            console.error('Error al enviar mensaje:', error);
+            setError(error.message || 'Error al enviar mensaje');
             return false;
         }
-    }, [user, apiRequest, stopTyping]);
+    }, [user, apiRequest, apiRequestFormData, stopTyping]);
+
+    // Eliminar mensaje
+    const deleteMessage = useCallback(async (messageId) => {
+        if (!messageId) {
+            setError('ID de mensaje requerido');
+            return false;
+        }
+        
+        try {
+            setIsDeleting(true);
+            await apiRequest(`/message/${messageId}`, { method: 'DELETE' });
+            return true;
+        } catch (error) {
+            console.error('Error al eliminar mensaje:', error);
+            setError(error.message || 'Error al eliminar mensaje');
+            return false;
+        } finally {
+            setIsDeleting(false);
+        }
+    }, [apiRequest]);
+
+    // Confirmar eliminación de mensaje
+    const confirmDeleteMessage = useCallback(async () => {
+        if (!messageToDelete) return;
+        
+        const success = await deleteMessage(messageToDelete._id);
+        if (success) {
+            closeDeleteModal();
+        }
+    }, [messageToDelete, deleteMessage, closeDeleteModal]);
 
     // Marcar mensajes como leídos
     const markAsRead = useCallback(async (conversationId) => {
@@ -383,15 +510,13 @@ export const useChat = () => {
         try {
             await apiRequest(`/read/${conversationId}`, { method: 'PUT' });
             
-            // Actualizar estado local para administradores
-            if (user.userType === 'admin') {
+            if (user?.userType === 'admin') {
                 setConversations(prev => prev.map(conv => 
                     conv.conversationId === conversationId 
                         ? { ...conv, unreadCountAdmin: 0 }
                         : conv
                 ));
                 
-                // Recalcular total de no leídos
                 setUnreadCount(prev => Math.max(0, prev - (activeConversationRef.current?.unreadCountAdmin || 0)));
             }
             
@@ -400,32 +525,10 @@ export const useChat = () => {
         }
     }, [user, apiRequest]);
 
-    // Cerrar conversación (solo administradores)
-    const closeConversation = useCallback(async (conversationId) => {
-        if (!conversationId || user.userType !== 'admin') return false;
-        
-        try {
-            await apiRequest(`/admin/close/${conversationId}`, { method: 'PUT' });
-            
-            // Actualizar estado local
-            setConversations(prev => prev.map(conv => 
-                conv.conversationId === conversationId 
-                    ? { ...conv, status: 'closed' }
-                    : conv
-            ));
-            
-            return true;
-        } catch (error) {
-            setError('Error al cerrar conversación');
-            return false;
-        }
-    }, [user, apiRequest]);
-
     // Seleccionar conversación activa y unirse a la sala de Socket.IO
     const selectConversation = useCallback(async (conversation) => {
         if (!conversation) return;
         
-        // Salir de la conversación anterior si existe
         if (activeConversationRef.current) {
             leaveConversation(activeConversationRef.current.conversationId);
         }
@@ -437,7 +540,6 @@ export const useChat = () => {
         lastMessageCountRef.current = 0;
         setTypingUsers(new Set());
         
-        // Unirse a la nueva conversación en Socket.IO
         joinConversation(conversation.conversationId);
         
         await getMessages(conversation.conversationId, 1, true, true);
@@ -452,34 +554,6 @@ export const useChat = () => {
         await getMessages(activeConversation.conversationId, nextPage, false, true);
     }, [activeConversation, hasMoreMessages, loadingMessages, currentPage, getMessages]);
 
-    // Reducir frecuencia de polling ya que Socket.IO maneja tiempo real
-    const checkForNewMessages = useCallback(async () => {
-        try {
-            // Solo verificar conversaciones para admin cada 30 segundos (como backup)
-            if (user.userType === 'admin') {
-                await getAllConversations(false);
-            }
-        } catch (error) {
-            // Error silencioso para backup polling
-        }
-    }, [user, getAllConversations]);
-
-    // Iniciar polling reducido (backup para Socket.IO)
-    const startPolling = useCallback(() => {
-        if (pollingIntervalRef.current) return;
-        
-        // Polling cada 30 segundos como backup (Socket.IO es primario)
-        pollingIntervalRef.current = setInterval(checkForNewMessages, 30000);
-    }, [checkForNewMessages]);
-
-    // Detener polling
-    const stopPolling = useCallback(() => {
-        if (pollingIntervalRef.current) {
-            clearInterval(pollingIntervalRef.current);
-            pollingIntervalRef.current = null;
-        }
-    }, []);
-
     // Inicializar chat según tipo de usuario
     const initializeChat = useCallback(async () => {
         if (!isAuthenticated || !user || isInitializedRef.current) {
@@ -491,90 +565,31 @@ export const useChat = () => {
         
         try {
             if (user.userType === 'admin') {
-                // Inicializar chat para administrador
                 await getAllConversations(true);
             } else if (user.userType === 'Customer') {
-                // Inicializar chat para cliente
                 const conversation = await getOrCreateConversation(true);
                 if (conversation) {
                     await selectConversation(conversation);
                 }
             }
-            
-            startPolling();
         } catch (error) {
+            console.error('Error al inicializar el chat:', error);
             setError('Error al inicializar el chat');
             isInitializedRef.current = false;
         }
-    }, [isAuthenticated, user, getAllConversations, getOrCreateConversation, selectConversation, startPolling]);
+    }, [isAuthenticated, user, getAllConversations, getOrCreateConversation, selectConversation]);
 
-    // Limpiar recursos del chat
-    const cleanup = useCallback(() => {
-        stopPolling();
-        
-        // Salir de conversación activa
-        if (activeConversationRef.current) {
-            leaveConversation(activeConversationRef.current.conversationId);
-        }
-        
-        // Limpiar timeout de escritura
-        if (typingTimeoutRef.current) {
-            clearTimeout(typingTimeoutRef.current);
-            typingTimeoutRef.current = null;
-        }
-        
-        setConversations([]);
-        setActiveConversation(null);
-        setMessages([]);
-        setNewMessage('');
-        setIsConnected(false);
-        setError(null);
-        setTypingUsers(new Set());
-        isInitializedRef.current = false;
-        lastMessageCountRef.current = 0;
-    }, [stopPolling, leaveConversation]);
-
-    // Effect principal para inicializar y limpiar
+    // Effect principal para inicializar
     useEffect(() => {
         if (isAuthenticated && user && !isInitializedRef.current) {
             initializeChat();
-        } else if (!isAuthenticated || !user) {
-            cleanup();
         }
-        
-        return () => {
-            if (!isAuthenticated || !user) {
-                cleanup();
-            }
-        };
-    }, [isAuthenticated, user?.id, user?.userType]);
-
-    // Cleanup al desmontar el componente
-    useEffect(() => {
-        return cleanup;
-    }, []);
+    }, [isAuthenticated, user?.id, user?.userType, initializeChat]);
 
     // Función para limpiar errores
     const clearError = useCallback(() => {
         setError(null);
     }, []);
-
-    // Función para refrescar manualmente
-    const refresh = useCallback(async () => {
-        if (!isAuthenticated || !user) return;
-        
-        try {
-            if (user.userType === 'admin') {
-                await getAllConversations(true);
-            }
-            
-            if (activeConversation) {
-                await getMessages(activeConversation.conversationId, 1, true, true);
-            }
-        } catch (error) {
-            setError('Error refrescando chat');
-        }
-    }, [isAuthenticated, user, getAllConversations, getMessages, activeConversation]);
 
     return {
         // Estados
@@ -582,6 +597,8 @@ export const useChat = () => {
         activeConversation,
         messages,
         newMessage,
+        selectedFile,
+        previewUrl,
         loading,
         error,
         isConnected: isConnected && socketConnected,
@@ -590,20 +607,34 @@ export const useChat = () => {
         loadingMessages,
         typingUsers,
         
-        // Setters actualizados
+        // Estados del modal de eliminación
+        showDeleteModal,
+        messageToDelete,
+        isDeleting,
+        
+        // Setters
         setNewMessage: handleMessageChange,
         
-        // Acciones
+        // Acciones principales
         sendMessage,
+        deleteMessage,
+        confirmDeleteMessage,
         selectConversation,
         markAsRead,
-        closeConversation,
         loadMoreMessages,
         scrollToBottom,
         clearError,
-        refresh,
+        
+        // Acciones de archivos
+        handleFileSelect,
+        clearSelectedFile,
+        
+        // Acciones del modal
+        openDeleteModal,
+        closeDeleteModal,
         
         // Referencias
-        messagesEndRef
+        messagesEndRef,
+        fileInputRef
     };
 };

@@ -1,7 +1,7 @@
 // Importar Express para crear el enrutador
 import express from "express";
 // Importar el controlador de chat
-import chatController from "../controllers/chatController.js";
+import chatController, { upload } from "../controllers/chatController.js";
 // Importar middlewares de autenticación
 import verifyToken, { verifyAdmin, verifyCustomer } from "../middlewares/validateAuthToken.js";
 
@@ -16,9 +16,13 @@ router.get("/conversation/:clientId", verifyCustomer, chatController.getOrCreate
 
 // ===== RUTAS COMPARTIDAS (CLIENTES Y ADMINISTRADORES) =====
 
-// POST /message - Enviar un mensaje (cliente o admin)
+// POST /message - Enviar un mensaje (cliente o admin) con archivo multimedia opcional
 // Requiere autenticación pero puede ser usado por ambos tipos de usuario
-router.post("/message", verifyToken, chatController.sendMessage);
+router.post("/message", verifyToken, upload.single('file'), chatController.sendMessage);
+
+// DELETE /message/:messageId - Eliminar un mensaje
+// Solo el remitente o admin pueden eliminar mensajes
+router.delete("/message/:messageId", verifyToken, chatController.deleteMessage);
 
 // GET /messages/:conversationId - Obtener mensajes de una conversación
 // Requiere autenticación y verificación de permisos dentro del controlador
@@ -37,10 +41,6 @@ router.get("/admin/conversations", verifyAdmin, chatController.getAllConversatio
 // GET /admin/conversation/:clientId - Obtener o crear conversación para un cliente específico (admin)
 // Permite al admin acceder a cualquier conversación de cliente
 router.get("/admin/conversation/:clientId", verifyAdmin, chatController.getOrCreateConversation);
-
-// PUT /admin/close/:conversationId - Cerrar conversación (solo admin)
-// Permite al administrador cerrar conversaciones activas
-router.put("/admin/close/:conversationId", verifyAdmin, chatController.closeConversation);
 
 // GET /admin/stats - Obtener estadísticas de chat (solo admin)
 // Proporciona métricas y estadísticas del sistema de chat
