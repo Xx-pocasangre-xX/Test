@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { useChat } from './Hooks/useChat';
 
 // Importar componentes modulares
@@ -6,7 +6,8 @@ import DeleteMessageModal from './DeleteMessageModal';
 import MessageItem from './MessageItem';
 import FilePreview from './FilePreview';
 import MediaRenderer from './MediaRenderer';
-import MessageInput from './MessageInput';
+import TypingIndicator from './TypingIndicator';
+import ChatStatus from './ChatStatus';
 
 const ChatClient = ({ isOpen, onClose }) => {
     const {
@@ -16,29 +17,76 @@ const ChatClient = ({ isOpen, onClose }) => {
         setNewMessage,
         loading,
         error,
+        isConnected,
         sendMessage,
         deleteMessage,
         clearError,
-        messagesEndRef
+        messagesEndRef,
+        typingUsers
     } = useChat();
 
     // Estados para el modal de eliminación
     const [showDeleteModal, setShowDeleteModal] = useState(false);
     const [messageToDelete, setMessageToDelete] = useState(null);
+    const [isDeleting, setIsDeleting] = useState(false);
 
     // Estados para archivos
     const [selectedFile, setSelectedFile] = useState(null);
     const [previewUrl, setPreviewUrl] = useState(null);
 
+    // Referencia para el input de archivos
+    const fileInputRef = useRef(null);
+
     // Manejar envío de mensaje
     const handleSendMessage = async (messageText, file = null) => {
-        if (!activeConversation || (!messageText?.trim() && !file)) return;
+        if (!activeConversation || (!messageText?.trim() && !file && !selectedFile)) return;
         
-        const success = await sendMessage(activeConversation.conversationId, messageText, file);
+        const fileToSend = file || selectedFile;
+        const success = await sendMessage(activeConversation.conversationId, messageText, fileToSend);
+        
         if (success) {
             setNewMessage('');
             setSelectedFile(null);
             setPreviewUrl(null);
+            // Limpiar el input de archivo
+            if (fileInputRef.current) {
+                fileInputRef.current.value = '';
+            }
+        }
+    };
+
+    // Manejar envío del formulario
+    const handleFormSubmit = (e) => {
+        e.preventDefault();
+        if (newMessage?.trim() || selectedFile) {
+            handleSendMessage(newMessage);
+        }
+    };
+
+    // Manejar presionar Enter
+    const handleKeyPress = (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            if (newMessage?.trim() || selectedFile) {
+                handleSendMessage(newMessage);
+            }
+        }
+    };
+
+    // Manejar selección de archivo
+    const handleFileSelect = (e) => {
+        const file = e.target.files[0];
+        if (file) {
+            setSelectedFile(file);
+            
+            // Crear preview para imágenes
+            if (file.type.startsWith('image/')) {
+                const reader = new FileReader();
+                reader.onload = (e) => setPreviewUrl(e.target.result);
+                reader.readAsDataURL(file);
+            } else {
+                setPreviewUrl(null);
+            }
         }
     };
 
@@ -55,15 +103,20 @@ const ChatClient = ({ isOpen, onClose }) => {
     const handleCloseDeleteModal = () => {
         setShowDeleteModal(false);
         setMessageToDelete(null);
+        setIsDeleting(false);
     };
 
     // Confirmar eliminación de mensaje
     const handleConfirmDelete = async () => {
         if (!messageToDelete) return;
         
+        setIsDeleting(true);
         const success = await deleteMessage(messageToDelete._id);
+        
         if (success) {
             handleCloseDeleteModal();
+        } else {
+            setIsDeleting(false);
         }
     };
 
@@ -137,7 +190,7 @@ const ChatClient = ({ isOpen, onClose }) => {
                                 Atención al cliente
                             </h3>
                             <p className="text-white text-opacity-80 text-xs truncate" style={{ fontFamily: 'Poppins, sans-serif' }}>
-                                {loading ? 'Conectando...' : 'En línea'}
+                                {loading ? 'Conectando...' : isConnected ? 'En línea' : 'Desconectado'}
                             </p>
                         </div>
                     </div>
@@ -158,6 +211,11 @@ const ChatClient = ({ isOpen, onClose }) => {
                     </div>
                 ) : (
                     <>
+                        {/* Estado de conexión */}
+                        {!isConnected && (
+                            <ChatStatus isConnected={isConnected} />
+                        )}
+
                         {/* Área de mensajes */}
                         <div className="flex-1 overflow-y-auto p-3 md:p-4 bg-gray-50 space-y-3 min-h-0">
                             {/* Mensaje de bienvenida automático */}
@@ -214,6 +272,11 @@ const ChatClient = ({ isOpen, onClose }) => {
                                     </div>
                                 );
                             })}
+
+                            {/* Indicador de escritura */}
+                            {typingUsers && typingUsers.size > 0 && (
+                                <TypingIndicator users={Array.from(typingUsers)} compact={true} />
+                            )}
                             
                             <div ref={messagesEndRef} />
                         </div>
@@ -226,24 +289,61 @@ const ChatClient = ({ isOpen, onClose }) => {
                                 onClear={() => {
                                     setSelectedFile(null);
                                     setPreviewUrl(null);
+                                    if (fileInputRef.current) {
+                                        fileInputRef.current.value = '';
+                                    }
                                 }}
                                 compact={true} // Vista compacta para cliente
                             />
                         )}
 
                         {/* Input para escribir mensaje */}
-                        <MessageInput
-                            value={newMessage}
-                            onChange={setNewMessage}
-                            onSend={handleSendMessage}
-                            onFileSelect={(file, preview) => {
-                                setSelectedFile(file);
-                                setPreviewUrl(preview);
-                            }}
-                            disabled={!activeConversation}
-                            placeholder="Escribe un mensaje..."
-                            compact={true} // Vista compacta para cliente
-                        />
+                        <div className="p-2 md:p-3 border-t border-gray-200 bg-white flex-shrink-0">
+                            <form onSubmit={handleFormSubmit} className="flex items-end space-x-2">
+                                {/* Botón de archivo */}
+                                <button
+                                    type="button"
+                                    onClick={() => fileInputRef.current?.click()}
+                                    className="flex-shrink-0 p-1 text-gray-500 hover:text-[#E8ACD2] transition-colors"
+                                    title="Adjuntar archivo"
+                                    disabled={!activeConversation}
+                                >
+                                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+                                    </svg>
+                                </button>
+                                
+                                <input
+                                    type="file"
+                                    ref={fileInputRef}
+                                    onChange={handleFileSelect}
+                                    accept="image/*,video/*,audio/*,.pdf,.doc,.docx"
+                                    className="hidden"
+                                />
+                                
+                                <input
+                                    type="text"
+                                    value={newMessage}
+                                    onChange={(e) => setNewMessage(e.target.value)}
+                                    onKeyPress={handleKeyPress}
+                                    placeholder="Escribe un mensaje..."
+                                    className="flex-1 border border-gray-300 rounded-lg px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-[#E8ACD2] focus:border-transparent"
+                                    style={{ fontFamily: 'Poppins, sans-serif' }}
+                                    disabled={!activeConversation}
+                                />
+                                
+                                <button
+                                    type="submit"
+                                    disabled={(!newMessage.trim() && !selectedFile) || !activeConversation}
+                                    className="flex-shrink-0 px-2 py-1 bg-[#E8ACD2] text-white rounded-lg hover:bg-[#E096C8] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                                    style={{ fontFamily: 'Poppins, sans-serif' }}
+                                >
+                                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                                    </svg>
+                                </button>
+                            </form>
+                        </div>
                     </>
                 )}
 
@@ -253,6 +353,7 @@ const ChatClient = ({ isOpen, onClose }) => {
                     message={messageToDelete}
                     onClose={handleCloseDeleteModal}
                     onConfirm={handleConfirmDelete}
+                    isDeleting={isDeleting}
                     formatTime={formatTime}
                     compact={true} // Modal compacto para cliente
                 />
