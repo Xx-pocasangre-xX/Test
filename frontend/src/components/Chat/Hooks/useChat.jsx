@@ -136,6 +136,46 @@ export const useChat = () => {
         }
     }, []);
 
+    // NUEVA FUNCIÓN: Obtener el último mensaje válido de una conversación
+    const getLastValidMessage = useCallback((conversationMessages) => {
+        if (!conversationMessages || conversationMessages.length === 0) {
+            return 'Sin mensajes';
+        }
+        
+        // Filtrar mensajes no eliminados y obtener el último
+        const validMessages = conversationMessages.filter(msg => !msg.isDeleted);
+        if (validMessages.length === 0) {
+            return 'Sin mensajes';
+        }
+        
+        const lastMessage = validMessages[validMessages.length - 1];
+        return lastMessage.message || 'Archivo multimedia';
+    }, []);
+
+    // NUEVA FUNCIÓN: Actualizar el último mensaje en las conversaciones
+    const updateConversationLastMessage = useCallback((conversationId) => {
+        const conversationMessages = messages.filter(msg => 
+            !msg.isDeleted && 
+            (msg.conversationId === conversationId || 
+             activeConversationRef.current?.conversationId === conversationId)
+        );
+        
+        const lastMessage = getLastValidMessage(conversationMessages);
+        const lastMessageAt = conversationMessages.length > 0 
+            ? conversationMessages[conversationMessages.length - 1].createdAt 
+            : null;
+        
+        setConversations(prev => prev.map(conv => 
+            conv.conversationId === conversationId
+                ? { 
+                    ...conv, 
+                    lastMessage,
+                    lastMessageAt 
+                }
+                : conv
+        ));
+    }, [messages, getLastValidMessage]);
+
     // Funciones para manejo de archivos
     const handleFileSelect = useCallback((e) => {
         const file = e.target.files[0];
@@ -205,9 +245,45 @@ export const useChat = () => {
             }
         });
 
+        // LISTENER MEJORADO: Manejo de mensajes eliminados
         const unsubscribeMessageDeleted = onMessageDeleted((data) => {
             console.log('Mensaje eliminado via Socket.IO:', data);
-            setMessages(prev => prev.filter(msg => msg._id !== data.messageId));
+            
+            // Actualizar mensajes locales
+            setMessages(prev => {
+                const updatedMessages = prev.filter(msg => msg._id !== data.messageId);
+                
+                // Si el mensaje eliminado era de la conversación activa, actualizar último mensaje
+                const deletedMessage = prev.find(msg => msg._id === data.messageId);
+                if (deletedMessage && activeConversationRef.current) {
+                    setTimeout(() => {
+                        updateConversationLastMessage(activeConversationRef.current.conversationId);
+                    }, 100);
+                }
+                
+                return updatedMessages;
+            });
+            
+            // Actualizar conversaciones para administradores
+            if (user?.userType === 'admin' && data.conversationId) {
+                // Obtener mensajes válidos después de la eliminación
+                const validMessages = messages.filter(msg => 
+                    msg._id !== data.messageId && !msg.isDeleted
+                );
+                const lastValidMessage = getLastValidMessage(validMessages);
+                
+                setConversations(prev => prev.map(conv => 
+                    conv.conversationId === data.conversationId
+                        ? { 
+                            ...conv, 
+                            lastMessage: lastValidMessage,
+                            lastMessageAt: validMessages.length > 0 
+                                ? validMessages[validMessages.length - 1].createdAt 
+                                : conv.lastMessageAt
+                        }
+                        : conv
+                ));
+            }
         });
 
         const unsubscribeConversationUpdated = onConversationUpdated((data) => {
@@ -278,7 +354,7 @@ export const useChat = () => {
             unsubscribeUserTyping?.();
             unsubscribeChatStats?.();
         };
-    }, [socketConnected, isAuthenticated, user?.id, user?.userType, onNewMessage, onMessageDeleted, onConversationUpdated, onConversationClosed, onMessagesRead, onUserTyping, onChatStatsUpdated, scrollToBottom]);
+    }, [socketConnected, isAuthenticated, user?.id, user?.userType, messages, onNewMessage, onMessageDeleted, onConversationUpdated, onConversationClosed, onMessagesRead, onUserTyping, onChatStatsUpdated, scrollToBottom, updateConversationLastMessage, getLastValidMessage]);
 
     // Obtener o crear conversación para el cliente actual
     const getOrCreateConversation = useCallback(async (showLoader = true) => {
@@ -452,6 +528,7 @@ export const useChat = () => {
                 });
             }
             
+            // ACTUALIZAR: Usar la función para actualizar último mensaje
             if (user?.userType === 'admin') {
                 setConversations(prev => prev.map(conv => 
                     conv.conversationId === conversationId 
@@ -473,7 +550,7 @@ export const useChat = () => {
         }
     }, [user, apiRequest, apiRequestFormData, stopTyping]);
 
-    // Eliminar mensaje
+    // FUNCIÓN MEJORADA: Eliminar mensaje
     const deleteMessage = useCallback(async (messageId) => {
         if (!messageId) {
             setError('ID de mensaje requerido');
@@ -482,7 +559,47 @@ export const useChat = () => {
         
         try {
             setIsDeleting(true);
+            
+            // Encontrar el mensaje antes de eliminarlo para obtener la conversación
+            const messageToDelete = messages.find(msg => msg._id === messageId);
+            const conversationId = messageToDelete?.conversationId || activeConversationRef.current?.conversationId;
+            
             await apiRequest(`/message/${messageId}`, { method: 'DELETE' });
+            
+            // Actualizar inmediatamente el estado local
+            setMessages(prev => {
+                const updatedMessages = prev.filter(msg => msg._id !== messageId);
+                
+                // Si hay una conversación activa, actualizar su último mensaje
+                if (conversationId) {
+                    setTimeout(() => {
+                        updateConversationLastMessage(conversationId);
+                    }, 100);
+                }
+                
+                return updatedMessages;
+            });
+            
+            // Para administradores, actualizar la lista de conversaciones
+            if (user?.userType === 'admin' && conversationId) {
+                const remainingMessages = messages.filter(msg => 
+                    msg._id !== messageId && !msg.isDeleted
+                );
+                const lastValidMessage = getLastValidMessage(remainingMessages);
+                
+                setConversations(prev => prev.map(conv => 
+                    conv.conversationId === conversationId
+                        ? { 
+                            ...conv, 
+                            lastMessage: lastValidMessage,
+                            lastMessageAt: remainingMessages.length > 0 
+                                ? remainingMessages[remainingMessages.length - 1].createdAt 
+                                : conv.lastMessageAt
+                        }
+                        : conv
+                ));
+            }
+            
             return true;
         } catch (error) {
             console.error('Error al eliminar mensaje:', error);
@@ -491,7 +608,7 @@ export const useChat = () => {
         } finally {
             setIsDeleting(false);
         }
-    }, [apiRequest]);
+    }, [apiRequest, messages, user?.userType, updateConversationLastMessage, getLastValidMessage]);
 
     // Confirmar eliminación de mensaje
     const confirmDeleteMessage = useCallback(async () => {

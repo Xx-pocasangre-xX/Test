@@ -22,13 +22,15 @@ const ChatClient = ({ isOpen, onClose }) => {
         deleteMessage,
         clearError,
         messagesEndRef,
-        typingUsers
+        typingUsers,
+        // Estados para modal de eliminación
+        showDeleteModal,
+        messageToDelete,
+        isDeleting,
+        openDeleteModal,
+        closeDeleteModal,
+        confirmDeleteMessage
     } = useChat();
-
-    // Estados para el modal de eliminación
-    const [showDeleteModal, setShowDeleteModal] = useState(false);
-    const [messageToDelete, setMessageToDelete] = useState(null);
-    const [isDeleting, setIsDeleting] = useState(false);
 
     // Estados para archivos
     const [selectedFile, setSelectedFile] = useState(null);
@@ -90,50 +92,13 @@ const ChatClient = ({ isOpen, onClose }) => {
         }
     };
 
-    // Manejar eliminación de mensaje (solo mensajes propios)
-    const handleDeleteMessage = (message) => {
-        // Solo permitir eliminar mensajes propios
-        if (message.senderType === 'Customer') {
-            setMessageToDelete(message);
-            setShowDeleteModal(true);
-        }
-    };
-
-    // Cerrar modal de eliminación
-    const handleCloseDeleteModal = () => {
-        setShowDeleteModal(false);
-        setMessageToDelete(null);
-        setIsDeleting(false);
-    };
-
-    // Confirmar eliminación de mensaje
-    const handleConfirmDelete = async () => {
-        if (!messageToDelete) return;
-        
-        setIsDeleting(true);
-        const success = await deleteMessage(messageToDelete._id);
-        
-        if (success) {
-            handleCloseDeleteModal();
-        } else {
-            setIsDeleting(false);
-        }
-    };
-
-    // Manejar acciones de mensaje
+    // FUNCIÓN MEJORADA: Manejar acciones de mensaje (solo eliminar mensajes propios)
     const handleMessageAction = (action, message) => {
-        switch (action) {
-            case 'edit':
-                // Solo para mensajes propios del cliente
-                if (message.senderType === 'Customer') {
-                    setNewMessage(message.message || '');
-                }
-                break;
-            case 'delete':
-                handleDeleteMessage(message);
-                break;
-            default:
-                break;
+        if (action === 'delete') {
+            // Solo permitir eliminar mensajes propios del cliente
+            if (message.senderType === 'Customer') {
+                openDeleteModal(message);
+            }
         }
     };
 
@@ -351,8 +316,8 @@ const ChatClient = ({ isOpen, onClose }) => {
                 <DeleteMessageModal
                     isOpen={showDeleteModal}
                     message={messageToDelete}
-                    onClose={handleCloseDeleteModal}
-                    onConfirm={handleConfirmDelete}
+                    onClose={closeDeleteModal}
+                    onConfirm={confirmDeleteMessage}
                     isDeleting={isDeleting}
                     formatTime={formatTime}
                     compact={true} // Modal compacto para cliente

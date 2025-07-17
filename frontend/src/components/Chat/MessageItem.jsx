@@ -31,8 +31,30 @@ const MessageItem = ({
         setShowActions(false);
     };
 
-    const canDelete = isOwnMessage || (isAdmin && message.senderType === 'Customer');
-    const showActionsMenu = isAdmin || isOwnMessage;
+    // LÓGICA MEJORADA: Determinar permisos de eliminación
+    const canDelete = () => {
+        if (isAdmin) {
+            // Los administradores pueden eliminar cualquier mensaje
+            return true;
+        } else {
+            // Los clientes solo pueden eliminar sus propios mensajes
+            return isOwnMessage && message.senderType === 'Customer';
+        }
+    };
+
+    // LÓGICA MEJORADA: Determinar si mostrar menú de acciones
+    const shouldShowActionsMenu = () => {
+        if (isAdmin) {
+            // Los administradores ven el menú en todos los mensajes
+            return true;
+        } else {
+            // Los clientes solo ven el menú en sus propios mensajes
+            return isOwnMessage;
+        }
+    };
+
+    const showActionsMenu = shouldShowActionsMenu();
+    const canDeleteMessage = canDelete();
 
     return (
         <div className={`flex ${isOwnMessage ? 'justify-end' : 'justify-start'} group`}>
@@ -109,19 +131,25 @@ const MessageItem = ({
                                     ref={actionsRef}
                                     className={`absolute ${isOwnMessage ? 'right-0' : 'left-0'} top-8 bg-white border border-gray-200 rounded-lg shadow-lg py-1 z-10 min-w-[120px]`}
                                 >
-
-
-                                    {/* Eliminar */}
-                                    {canDelete && (
+                                    {/* Eliminar - Solo si tiene permisos */}
+                                    {canDeleteMessage && (
                                         <button
                                             onClick={() => handleAction('delete')}
-                                            className="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center"
+                                            className="w-full text-left px-3 py-2 text-sm text-red-600 hover:bg-red-50 flex items-center transition-colors"
+                                            style={{ fontFamily: 'Poppins, sans-serif' }}
                                         >
                                             <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                                             </svg>
                                             Eliminar
                                         </button>
+                                    )}
+
+                                    {/* Mensaje informativo si no puede eliminar */}
+                                    {!canDeleteMessage && showActionsMenu && (
+                                        <div className="px-3 py-2 text-xs text-gray-400" style={{ fontFamily: 'Poppins, sans-serif' }}>
+                                            No puedes eliminar este mensaje
+                                        </div>
                                     )}
                                 </div>
                             )}

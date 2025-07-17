@@ -25,13 +25,15 @@ const ChatAdmin = () => {
         selectConversation,
         clearError,
         messagesEndRef,
-        typingUsers
+        typingUsers,
+        // Estados para modal de eliminación
+        showDeleteModal,
+        messageToDelete,
+        isDeleting,
+        openDeleteModal,
+        closeDeleteModal,
+        confirmDeleteMessage
     } = useChat();
-
-    // Estados para el modal de eliminación
-    const [showDeleteModal, setShowDeleteModal] = useState(false);
-    const [messageToDelete, setMessageToDelete] = useState(null);
-    const [isDeleting, setIsDeleting] = useState(false);
 
     // Estados para archivos
     const [selectedFile, setSelectedFile] = useState(null);
@@ -93,37 +95,20 @@ const ChatAdmin = () => {
         }
     };
 
-    // Abrir modal de confirmación para eliminar
-    const handleDeleteMessage = (message) => {
-        setMessageToDelete(message);
-        setShowDeleteModal(true);
-    };
-
-    // Cerrar modal de eliminación
-    const handleCloseDeleteModal = () => {
-        setShowDeleteModal(false);
-        setMessageToDelete(null);
-        setIsDeleting(false);
-    };
-
-    // Confirmar eliminación de mensaje
-    const handleConfirmDelete = async () => {
-        if (!messageToDelete) return;
-        
-        setIsDeleting(true);
-        const success = await deleteMessage(messageToDelete._id);
-        
-        if (success) {
-            handleCloseDeleteModal();
-        } else {
-            setIsDeleting(false);
-        }
-    };
-
-    // Manejar acciones de mensaje - Solo eliminar
+    // FUNCIÓN MEJORADA: Manejar acciones de mensaje
     const handleMessageAction = (action, message) => {
         if (action === 'delete') {
-            handleDeleteMessage(message);
+            // Verificar permisos antes de abrir modal
+            const canDelete = message.senderType === 'admin' || 
+                            (message.senderType === 'Customer' && 
+                             (activeConversation?.clientId?._id === message.senderId?._id || 
+                              activeConversation?.clientId?.id === message.senderId?.id));
+            
+            if (canDelete) {
+                openDeleteModal(message);
+            } else {
+                console.warn('No tienes permisos para eliminar este mensaje');
+            }
         }
     };
 
@@ -410,8 +395,8 @@ const ChatAdmin = () => {
             <DeleteMessageModal
                 isOpen={showDeleteModal}
                 message={messageToDelete}
-                onClose={handleCloseDeleteModal}
-                onConfirm={handleConfirmDelete}
+                onClose={closeDeleteModal}
+                onConfirm={confirmDeleteMessage}
                 isDeleting={isDeleting}
                 formatTime={formatTime}
             />
